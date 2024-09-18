@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Index Page</title>
+</head>
+
+<body>
+    <div>
+        <h1>Welcome to the Index Page</h1>
+        <p>{{message}}</p>
+    </div>
+
+    <div>
+        <button onclick="openPopup()">Login</button>
+
+        <script>
+            let popupWindow;
+            let isReloading = false;
+
+            function openPopup() {
+                popupWindow = window.open(
+                    `/auth/google`,
+                    "PopupWindow",
+                    "width=700,height=800,left=1000,top=-1000,resizable=yes,scrollbars=yes"
+                );
+
+                // Set up an interval to check if the popup has returned to our origin
+                const checkInterval = setInterval(() => {
+                    if (popupWindow.closed) {
+                        clearInterval(checkInterval);
+                        handlePopupClosed();
+                    }
+                }, 100);  // Check every 100ms
+            }
+
+            function handlePopupClosed() {
+                if (isReloading) return;  // Prevent multiple reloads
+                isReloading = true;
+
+                const statusElement = document.getElementById('status');
+                if (statusElement) {
+                    statusElement.textContent = 'Popup closed. Reloading parent...';
+                }
+
+                // Reload the parent window
+                setTimeout(() => {
+                    window.location.reload();
+                }, 100);  // Wait for 1 second before reloading
+            }
+
+            // Add an unload event listener to handle page navigation
+            window.addEventListener('unload', () => {
+                if (popupWindow && !popupWindow.closed) {
+                    popupWindow.close();
+                }
+            });
+        </script>
+    </div>
+
+</body>
+
+</html>

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Index Page</title>
+</head>
+
+<body>
+    <div>
+        <h1>Welcome to the Index Page</h1>
+        <p>{{message}}</p>
+        <p>You may now access <a href="/protected">/protected</a>.<br />Log out with /logout.</p>
+    </div>
+
+    <div>
+        <button onclick="Logout()">Logout</button>
+        <script>
+            function Logout() {
+                window.location.href = "/logout";
+            }
+        </script>
+    </div>
+</body>
+
+</html>
