@@ -32,6 +32,8 @@ use axum_server::tls_rustls::RustlsConfig;
 use std::{net::SocketAddr, path::PathBuf};
 use tokio::task::JoinHandle;
 
+use dotenv::dotenv;
+
 static AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 static TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 static SCOPE: &str = "openid+email+profile";
@@ -50,6 +52,7 @@ struct Ports {
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()

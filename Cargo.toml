@@ -12,6 +12,7 @@ axum = "0.7.5"
 axum-extra = { version = "0.9.3", features = ["typed-header"] }
 axum-server = { version = "0.7.1", features = ["tls-rustls"] }
 chrono = "0.4.38"
+dotenv = "0.15.0"
 http = "1.1.0"
 rand = "0.8.5"
 reqwest = "0.12.7"
