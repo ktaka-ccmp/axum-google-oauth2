@@ -6,14 +6,18 @@
 ngrok http 3000
 ```
 
-ngrokのURLをORIGINに設定
+.envで、ngrokのURLをORIGINに設定
+
+.env
 
 ```text
-export CLIENT_ID=$client_id
-export CLIENT_SECRET=$client_secret
-export ORIGIN="https://xxxxx.ngrok-free.app"
-# or export ORIGIN='https://localhost:3443'
+CLIENT_ID=$client_id
+CLIENT_SECRET=$client_secret
+ORIGIN="https://xxxxx.ngrok-free.app"
+#ORIGIN='https://localhost:3443'
+```
 
+```text
 cargo watch -x run
 ```
 
