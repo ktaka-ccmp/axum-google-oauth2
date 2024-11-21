@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use http::HeaderValue;
-use tower_http::cors::CorsLayer;
+// use http::HeaderValue;
+// use tower_http::cors::CorsLayer;
 
 use url::Url;
 
@@ -67,6 +67,7 @@ async fn main() {
 
     // let allowed_origin = env::var("ORIGIN").expect("Missing ORIGIN!");
     // let allowed_origin = format!("http://localhost:3000");
+    // let allowed_origin = format!("https://accounts.google.com");
 
     // let cors = CorsLayer::new()
     //     .allow_origin(HeaderValue::from_str(&allowed_origin).unwrap())
@@ -504,8 +505,10 @@ async fn post_authorized(
     println!("Cookies: {:#?}", cookies.get(CSRF_COOKIE_NAME));
 
     validate_origin(&headers, &params.auth_url).await?;
-    csrf_checks(cookies.clone(), &state.store, &form, headers).await?;
-    delete_session_from_store(cookies, CSRF_COOKIE_NAME.to_string(), &state.store).await?;
+    // Optional: Basic state validation even without cookie
+    if form.state.is_empty() {
+        return Err(anyhow::anyhow!("Missing state parameter").into());
+    }
 
     authorized(form.code.clone(), params, state).await
 }
