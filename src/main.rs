@@ -39,8 +39,8 @@ static SCOPE: &str = "openid+email+profile";
 
 // "__Host-" prefix are added to make cookies "host-only".
 static COOKIE_NAME: &str = "__Host-SessionId";
-// static CSRF_COOKIE_NAME: &str = "__Host-CsrfId";
-static CSRF_COOKIE_NAME: &str = "CsrfId";
+static CSRF_COOKIE_NAME: &str = "__Host-CsrfId";
+// static CSRF_COOKIE_NAME: &str = "CsrfId";
 static COOKIE_MAX_AGE: i64 = 600; // 10 minutes
 static CSRF_COOKIE_MAX_AGE: i64 = 20; // 20 seconds
 
@@ -457,23 +457,21 @@ async fn delete_session_from_store(
     cookie_name: String,
     store: &MemoryStore,
 ) -> Result<(), AppError> {
-    let cookie = cookies
-        .get(&cookie_name)
-        .context("unexpected error getting cookie name")?;
-
-    match store
-        .load_session(cookie.to_string())
-        .await
-        .context("failed to load session")?
-    {
-        Some(session) => {
-            store
-                .destroy_session(session)
-                .await
-                .context("failed to destroy session")?;
-        }
-        // No session active
-        None => (),
+    if let Some(cookie) = cookies.get(&cookie_name) {
+        match store
+            .load_session(cookie.to_string())
+            .await
+            .context("failed to load session")?
+        {
+            Some(session) => {
+                store
+                    .destroy_session(session)
+                    .await
+                    .context("failed to destroy session")?;
+            }
+            // No session active
+            None => (),
+        };
     };
     Ok(())
 }
