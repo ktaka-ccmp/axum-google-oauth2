@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use async_session::{MemoryStore, Session, SessionStore};
 use axum::{
     async_trait,
-    extract::{FromRef, FromRequestParts, Query, State},
+    extract::{Form, FromRef, FromRequestParts, Query, State},
     http::{header::SET_COOKIE, HeaderMap},
     response::{IntoResponse, Redirect, Response},
     routing::get,
@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-// use tower_http::cors::CorsLayer;
 // use http::HeaderValue;
+// use tower_http::cors::CorsLayer;
 
 use url::Url;
 
@@ -24,7 +24,6 @@ use chrono::{DateTime, Duration, Utc};
 use rand::{thread_rng, Rng};
 use urlencoding::encode;
 
-// use askama::Template;
 use askama_axum::Template;
 use axum::response::Html;
 
@@ -40,7 +39,8 @@ static SCOPE: &str = "openid+email+profile";
 
 // "__Host-" prefix are added to make cookies "host-only".
 static COOKIE_NAME: &str = "__Host-SessionId";
-static CSRF_COOKIE_NAME: &str = "__Host-CsrfId";
+// static CSRF_COOKIE_NAME: &str = "__Host-CsrfId";
+static CSRF_COOKIE_NAME: &str = "CsrfId";
 static COOKIE_MAX_AGE: i64 = 600; // 10 minutes
 static CSRF_COOKIE_MAX_AGE: i64 = 20; // 20 seconds
 
@@ -67,6 +67,7 @@ async fn main() {
 
     // let allowed_origin = env::var("ORIGIN").expect("Missing ORIGIN!");
     // let allowed_origin = format!("http://localhost:3000");
+    // let allowed_origin = format!("https://accounts.google.com");
 
     // let cors = CorsLayer::new()
     //     .allow_origin(HeaderValue::from_str(&allowed_origin).unwrap())
@@ -76,7 +77,10 @@ async fn main() {
     let app = Router::new()
         .route("/", get(index))
         .route("/auth/google", get(google_auth))
-        .route("/auth/authorized", get(login_authorized))
+        .route(
+            "/auth/authorized",
+            get(get_authorized).post(post_authorized),
+        )
         .route("/protected", get(protected))
         .route("/logout", get(logout))
         .route("/popup_close", get(popup_close))
@@ -146,9 +150,10 @@ fn app_state_init() -> AppState {
         nonce: None,
         state: None,
         csrf_token: None,
-        response_mode: Some(ResponseMode::Query), // "query",
-        prompt: Some(Prompt::Consent),            // "consent",
-        access_type: Some(AccessType::Online),    // "online",
+        // response_mode: Some(ResponseMode::Query), // "query",
+        response_mode: Some(ResponseMode::FormPost), // "form_post",
+        prompt: Some(Prompt::Consent),               // "consent",
+        access_type: Some(AccessType::Online),       // "online",
     };
 
     AppState {
@@ -490,20 +495,43 @@ struct OidcTokenResponse {
     id_token: Option<String>,
 }
 
-async fn login_authorized(
-    Query(query): Query<AuthRequest>,
-    State(store): State<MemoryStore>,
+async fn post_authorized(
     State(params): State<OAuth2Params>,
+    State(state): State<AppState>,
+    TypedHeader(cookies): TypedHeader<headers::Cookie>,
+    headers: HeaderMap,
+    Form(form): Form<AuthRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    println!("Cookies: {:#?}", cookies.get(CSRF_COOKIE_NAME));
+
+    validate_origin(&headers, &params.auth_url).await?;
+    // Optional: Basic state validation even without cookie
+    if form.state.is_empty() {
+        return Err(anyhow::anyhow!("Missing state parameter").into());
+    }
+
+    authorized(form.code.clone(), params, state).await
+}
+
+async fn get_authorized(
+    Query(query): Query<AuthRequest>,
+    State(params): State<OAuth2Params>,
+    State(state): State<AppState>,
     TypedHeader(cookies): TypedHeader<headers::Cookie>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
-    println!("Query: {:#?}", query);
-    println!("code: {:#?}", query.code);
-    println!("Params: {:#?}", params);
-
     validate_origin(&headers, &params.auth_url).await?;
-    csrf_checks(cookies.clone(), &store, &query, headers).await?;
+    csrf_checks(cookies.clone(), &state.store, &query, headers).await?;
+    delete_session_from_store(cookies, CSRF_COOKIE_NAME.to_string(), &state.store).await?;
 
+    authorized(query.code.clone(), params, state).await
+}
+
+async fn authorized(
+    code: String,
+    params: OAuth2Params,
+    state: AppState,
+) -> Result<impl IntoResponse, AppError> {
     let mut headers = HeaderMap::new();
     header_set_cookie(
         &mut headers,
@@ -513,9 +541,9 @@ async fn login_authorized(
         -86400,
     )?;
 
-    delete_session_from_store(cookies, CSRF_COOKIE_NAME.to_string(), &store).await?;
+    // delete_session_from_store(cookies, CSRF_COOKIE_NAME.to_string(), &state.store).await?;
 
-    let (access_token, id_token) = exchange_code_for_token(params, query.code).await?;
+    let (access_token, id_token) = exchange_code_for_token(params, code).await?;
     println!("Access Token: {:#?}", access_token);
     println!("ID Token: {:#?}", id_token);
 
@@ -523,7 +551,7 @@ async fn login_authorized(
 
     let max_age = COOKIE_MAX_AGE;
     let expires_at = Utc::now() + Duration::seconds(max_age);
-    let session_id = create_and_store_session(user_data, &store, expires_at).await?;
+    let session_id = create_and_store_session(user_data, &state.store, expires_at).await?;
     header_set_cookie(
         &mut headers,
         COOKIE_NAME.to_string(),
