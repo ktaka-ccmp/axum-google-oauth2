@@ -57,6 +57,8 @@ Let me break this down into two clear analyses:
 
 ### 1. Form Post Mode
 
+I'll update the previous diagrams and explanations, integrating relevant information from the old version while keeping it consistent with the latest code:
+
 ```mermaid
 sequenceDiagram
     participant User
@@ -65,25 +67,64 @@ sequenceDiagram
     participant Google
 
     User->>Server: GET /auth/google
-    Server->>Store: Store nonce in session (nonce_id)
-    Server->>Store: Store csrf_token in session (csrf_id)
-    Server-->>User: Set __Host-CsrfId cookie (not sent in POST)
-    Server-->>User: Redirect response
-    User->>Google: Request with state={csrf_token,nonce_id} & nonce
+    Server->>Server: Generate csrf_token & nonce
+    Server->>Store: Store CsrfData {token, expires_at, user_agent}
+    Server->>Store: Store NonceData {nonce, expires_at}
+    Server-->>User: Set __Host-CsrfId cookie (SameSite=Lax)
+    User->>Google: Redirect with state={csrf_token,nonce_id} & nonce
+    
     User->>Google: Login & Consent
-    Note right of Google: Sign ID token including nonce claim
-    Google->>User: Returns HTML form
-    User->>Server: POST /auth/authorized with:<br/>1. code<br/>2. state={csrf_token,nonce_id}<br/>3. id_token (signed, contains nonce)
-    Server->>Store: Retrieve nonce using nonce_id from state
-    Note right of Server: Verify:<br/>1. ID token signature<br/>2. nonce in ID token matches stored nonce<br/>3. Origin is from Google
-    Server->>Store: Delete nonce session
+    Google->>User: Returns HTML form with auto-submit
+    Note right of Google: Form contains:<br/>1. code<br/>2. state<br/>3. id_token (signed with nonce)
+    User->>Server: POST /auth/authorized<br/>(Cross-origin POST from accounts.google.com)
+    Note right of User: SameSite=Lax cookie not sent<br/>because it's cross-site POST
+    
+    Server->>Store: Retrieve & verify nonce using nonce_id
+    Note right of Server: Verify:<br/>1. ID token signature<br/>2. nonce matches<br/>3. Origin is Google
     Server->>Google: Exchange code for tokens
-    Server->>Store: Create new session with user data
+    Server->>Store: Store user session
+    Server->>Store: Delete nonce session
     Server-->>User: Set __Host-SessionId cookie<br/>Redirect to success page
 
 ```
 
-Form Post Mode Analysis:
+Form Post Mode Detail:
+1. Initial Flow:
+- Client requests `/auth/google`
+- Server:
+  - Generates csrf_token and nonce
+  - Stores both in separate sessions
+  - Sets `__Host-CsrfId` cookie (though it won't be used)
+  - Redirects to Google with state parameter and nonce
+
+2. Google Auth:
+- User authenticates with Google
+- Google returns auto-submit form containing:
+```html
+<form method="post" action="https://your-site/auth/authorized">
+    <input type="hidden" name="code" value="4/P7q7W91...">
+    <input type="hidden" name="state" value="{csrf_token,nonce_id}">
+    <input type="hidden" name="id_token" value="eyJ0...">
+    <script>window.onload = function() { document.forms[0].submit() }</script>
+</form>
+```
+
+3. Validation & Token Exchange:
+- Server verifies:
+  - Origin/Referer is from Google
+  - Nonce in ID token matches stored nonce
+  - ID token signature is valid
+- Creates authenticated session
+- Sets `__Host-SessionId` cookie
+
+Security Features:
+- `__Host-` prefix enforces secure, host-only cookies
+- Server-side nonce storage
+- Google-signed ID token
+- Origin validation ensures request from Google
+- Short-lived sessions (60 seconds)
+- POST parameters not exposed in URLs
+
 
 ```text
 Strengths:
@@ -102,6 +143,8 @@ Potential Concerns:
 
 ### 2. Query Mode
 
+Here's the Query mode diagram and explanation incorporating details from the old version:
+
 ```mermaid
 sequenceDiagram
     participant User
@@ -110,26 +153,77 @@ sequenceDiagram
     participant Google
 
     User->>Server: GET /auth/google
-    Server->>Store: Store nonce in session (nonce_id)
-    Server->>Store: Store csrf_token in session (csrf_id)
-    Server-->>User: Set __Host-CsrfId cookie
-    Server-->>User: Redirect response
-    User->>Google: Request with state={csrf_token,nonce_id} & nonce
+    Server->>Server: Generate csrf_token & nonce
+    Server->>Store: Store CsrfData {token, expires_at, user_agent}
+    Server->>Store: Store NonceData {nonce, expires_at}
+    Server-->>User: Set __Host-CsrfId cookie (SameSite=Lax)
+    User->>Google: Redirect with state={csrf_token,nonce_id} & nonce
+    
     User->>Google: Login & Consent
-    Note right of Google: Sign ID token including nonce claim
-    Google->>User: 302 Redirect
-    User->>Server: GET /auth/authorized with:<br/>1. code<br/>2. state={csrf_token,nonce_id}<br/>3. __Host-CsrfId cookie
-    Server->>Store: Verify csrf_token using cookie
-    Server->>Store: Retrieve & verify nonce using nonce_id
-    Note right of Server: Verify:<br/>1. CSRF check<br/>2. ID token signature<br/>3. nonce matches<br/>4. Origin is from Google
-    Server->>Store: Delete both sessions
+    Google-->>User: 302 Redirect to callback with:<br/>1. code<br/>2. state<br/>3. id_token (signed with nonce)
+    Note right of User: Top-level redirect:<br/>SameSite=Lax cookie IS sent
+    
+    User->>Server: GET /auth/authorized with:<br/>1. code<br/>2. state<br/>3. __Host-CsrfId cookie
+    Server->>Server: Validate Origin/Referer
+    Server->>Store: Load csrf session from cookie
+    Note right of Server: Validate:<br/>1. CSRF token matches<br/>2. Session not expired<br/>3. User agent matches
+    Server->>Store: Load & verify nonce using nonce_id
+    Note right of Server: Validate:<br/>1. ID token signature<br/>2. nonce matches
     Server->>Google: Exchange code for tokens
-    Server->>Store: Create new session with user data
+    Server->>Store: Store user session
+    Server->>Store: Delete csrf & nonce sessions
     Server-->>User: Set __Host-SessionId cookie<br/>Redirect to success page
 
 ```
 
-Query Mode Analysis:
+Query Mode Detail:
+1. Initial Flow:
+- Client requests `/auth/google`
+- Server:
+  - Generates csrf_token and nonce
+  - Stores both in separate sessions with expiration
+  - Sets `__Host-CsrfId` cookie
+  - Redirects to Google with state parameter and nonce
+
+2. Google Auth:
+- User authenticates with Google
+- Google redirects back with:
+  - Authorization code
+  - Original state parameter
+  - ID token (signed, containing nonce)
+
+3. Validation & Token Exchange:
+- Client sends:
+  - Authorization code
+  - State parameter
+  - `__Host-CsrfId` cookie (sent because it's a GET request)
+- Server validates:
+  - Loads csrf session using cookie
+  - Compares stored csrf_token with state
+  - Checks Origin/Referer is from Google
+  - Verifies User-Agent matches
+  - Validates nonce from ID token against stored nonce
+- If valid:
+  - Exchanges code for tokens
+  - Creates authenticated session
+  - Sets `__Host-SessionId` cookie
+
+Security Features:
+- `__Host-` prefix enforces secure, host-only cookies
+- Double protection with CSRF token and nonce
+- State parameter contains only IDs, not actual tokens
+- Origin/Referer validation ensures redirect from Google
+- User-Agent validation
+- Short-lived sessions (60 seconds)
+- One-time use enforced by session deletion
+
+Cookie Behavior:
+- `SameSite=Lax` allows cookie to be sent with:
+  - Same-site requests
+  - Cross-site GET requests (like the OAuth callback)
+- This enables full CSRF protection in query mode
+- But parameters are exposed in URL
+
 ```
 Strengths:
 1. Full CSRF protection
