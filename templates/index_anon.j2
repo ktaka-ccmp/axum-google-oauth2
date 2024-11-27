@@ -31,7 +31,8 @@
                 const checkInterval = setInterval(() => {
                     if (popupWindow.closed) {
                         clearInterval(checkInterval);
-                        handlePopupClosed();
+                        window.location.reload();
+                        // handlePopupClosed();
                     }
                 }, 100);  // Check every 100ms
             }
