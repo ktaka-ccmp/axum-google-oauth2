@@ -77,13 +77,13 @@ cargo watch -x run
 sequenceDiagram
     participant User
     participant Server
-    participant Store
+    participant Session Store
     participant Google
 
     User->>Server: GET /auth/google
     Server->>Server: Generate csrf_token & nonce
-    Server->>Store: Store CsrfData {token, expires_at, user_agent}
-    Server->>Store: Store NonceData {nonce, expires_at}
+    Server->>Session Store: Store CsrfData {token, expires_at, user_agent}
+    Server->>Session Store: Store NonceData {nonce, expires_at}
     Server-->>User: Set __Host-CsrfId cookie (SameSite=Lax)
     User->>Google: Redirect with state={csrf_token,nonce_id} & nonce
     
@@ -93,11 +93,11 @@ sequenceDiagram
     User->>Server: POST /auth/authorized<br/>(Cross-origin POST from accounts.google.com)
     Note right of User: SameSite=Lax cookie not sent<br/>because it's cross-site POST
     
-    Server->>Store: Retrieve & verify nonce using nonce_id
+    Server->>Session Store: Retrieve & verify nonce using nonce_id
     Note right of Server: Verify:<br/>1. ID token signature<br/>2. nonce matches<br/>3. Origin is Google
     Server->>Google: Exchange code for tokens
-    Server->>Store: Store user session
-    Server->>Store: Delete nonce session
+    Server->>Session Store: Store user session
+    Server->>Session Store: Delete nonce session
     Server-->>User: Set __Host-SessionId cookie<br/>Redirect to success page
 ```
 
@@ -181,13 +181,13 @@ Concerns:
 sequenceDiagram
     participant User
     participant Server
-    participant Store
+    participant Session Store
     participant Google
 
     User->>Server: GET /auth/google
     Server->>Server: Generate csrf_token & nonce
-    Server->>Store: Store CsrfData {token, expires_at, user_agent}
-    Server->>Store: Store NonceData {nonce, expires_at}
+    Server->>Session Store: Store CsrfData {token, expires_at, user_agent}
+    Server->>Session Store: Store NonceData {nonce, expires_at}
     Server-->>User: Set __Host-CsrfId cookie (SameSite=Lax)
     User->>Google: Redirect with state={csrf_token,nonce_id} & nonce
     
@@ -197,13 +197,13 @@ sequenceDiagram
     
     User->>Server: GET /auth/authorized with:<br/>1. code<br/>2. state<br/>3. __Host-CsrfId cookie
     Server->>Server: Validate Origin/Referer
-    Server->>Store: Load csrf session from cookie
+    Server->>Session Store: Load csrf session from cookie
     Note right of Server: Validate:<br/>1. CSRF token matches<br/>2. Session not expired<br/>3. User agent matches
-    Server->>Store: Load & verify nonce using nonce_id
+    Server->>Session Store: Load & verify nonce using nonce_id
     Note right of Server: Validate:<br/>1. ID token signature<br/>2. nonce matches
     Server->>Google: Exchange code for tokens
-    Server->>Store: Store user session
-    Server->>Store: Delete csrf & nonce sessions
+    Server->>Session Store: Store user session
+    Server->>Session Store: Delete csrf & nonce sessions
     Server-->>User: Set __Host-SessionId cookie<br/>Redirect to success page
 ```
 
