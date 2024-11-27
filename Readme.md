@@ -5,16 +5,15 @@
   - [security enhancement by csrf\_token](#security-enhancement-by-csrf_token)
     - [response\_mode=query](#response_modequery)
   - [Claude.ai analysis](#claudeai-analysis)
-- [OAuth 2.0 Response Mode Analysis](#oauth-20-response-mode-analysis)
-  - [1. Form Post Mode Analysis](#1-form-post-mode-analysis)
-    - [Flow Diagram](#flow-diagram)
-    - [Implementation Detail](#implementation-detail)
-    - [Security Analysis](#security-analysis)
-  - [2. Query Mode Analysis](#2-query-mode-analysis)
-    - [Flow Diagram](#flow-diagram-1)
-    - [Implementation Detail](#implementation-detail-1)
-    - [Security Analysis](#security-analysis-1)
-  - [Recommendation: USE FORM POST MODE](#recommendation-use-form-post-mode)
+    - [1. Form Post Mode Analysis](#1-form-post-mode-analysis)
+      - [Flow Diagram](#flow-diagram)
+      - [Implementation Detail](#implementation-detail)
+      - [Security Analysis](#security-analysis)
+    - [2. Query Mode Analysis](#2-query-mode-analysis)
+      - [Flow Diagram](#flow-diagram-1)
+      - [Implementation Detail](#implementation-detail-1)
+      - [Security Analysis](#security-analysis-1)
+    - [Recommendation: USE FORM POST MODE](#recommendation-use-form-post-mode)
   - [Why is the \_\_Host-CsrfId sent in query mode but not in form\_post?](#why-is-the-__host-csrfid-sent-in-query-mode-but-not-in-form_post)
   - [Claude another version of analysis](#claude-another-version-of-analysis)
   - [Claude](#claude)
@@ -70,11 +69,10 @@ cargo watch -x run
 
 ## Claude.ai analysis
 
-# OAuth 2.0 Response Mode Analysis
+### 1. Form Post Mode Analysis
 
-## 1. Form Post Mode Analysis
+#### Flow Diagram
 
-### Flow Diagram
 ```mermaid
 sequenceDiagram
     participant User
@@ -103,9 +101,10 @@ sequenceDiagram
     Server-->>User: Set __Host-SessionId cookie<br/>Redirect to success page
 ```
 
-### Implementation Detail
+#### Implementation Detail
 
 1. Initial Request:
+
 ```rust
 // Server generates and stores both tokens
 let csrf_token = generate_random_token();
@@ -123,6 +122,7 @@ let state_params = StateParams {
 ```
 
 2. Google's Auto-submit Form:
+
 ```html
 <form method="post" action="https://your-site/auth/authorized">
     <input type="hidden" name="code" value="4/P7q7W91...">
@@ -133,6 +133,7 @@ let state_params = StateParams {
 ```
 
 3. Server-side Verification:
+
 ```rust
 // Verify nonce from ID token matches stored nonce
 async fn verify_nonce(
@@ -153,7 +154,7 @@ async fn verify_nonce(
 }
 ```
 
-### Security Analysis
+#### Security Analysis
 
 Strengths:
 1. Authorization code protected:
@@ -172,9 +173,10 @@ Concerns:
 1. No CSRF cookie validation (mitigated by other measures)
 2. State parameter could be modified (limited impact due to server-side storage)
 
-## 2. Query Mode Analysis
+### 2. Query Mode Analysis
 
-### Flow Diagram
+#### Flow Diagram
+
 ```mermaid
 sequenceDiagram
     participant User
@@ -205,11 +207,12 @@ sequenceDiagram
     Server-->>User: Set __Host-SessionId cookie<br/>Redirect to success page
 ```
 
-### Implementation Detail
+#### Implementation Detail
 
 1. Initial Flow same as form_post mode
 
 2. Additional CSRF Validation:
+
 ```rust
 async fn csrf_checks(
     cookies: headers::Cookie,
@@ -228,9 +231,10 @@ async fn csrf_checks(
 }
 ```
 
-### Security Analysis
+#### Security Analysis
 
 Strengths:
+
 1. Full CSRF protection via cookie
 2. Double verification:
    - CSRF token validation
@@ -239,17 +243,19 @@ Strengths:
 4. One-time use sessions
 
 Critical Issues:
+
 1. Authorization code exposed in:
    - URL parameters
    - Browser history
    - Server logs
    - Referer headers
 
-## Recommendation: USE FORM POST MODE
+### Recommendation: USE FORM POST MODE
 
 The decision comes down to a key security principle: protecting the authorization code is more critical than additional CSRF protection.
 
 Form Post mode is superior because:
+
 1. Primary OAuth security concern is protecting sensitive tokens
 2. POST body transmission protects critical data
 3. The lack of CSRF cookie protection is well compensated by:
