@@ -53,10 +53,10 @@ static OAUTH2_QUERY_STRING: &str = "response_type=code\
 // prompt: none, consent, select_account
 
 // "__Host-" prefix are added to make cookies "host-only".
-static COOKIE_NAME: &str = "__Host-SessionId";
+static SESSION_COOKIE_NAME: &str = "__Host-SessionId";
 static CSRF_COOKIE_NAME: &str = "__Host-CsrfId";
-static COOKIE_MAX_AGE: i64 = 600; // 10 minutes
-static CSRF_COOKIE_MAX_AGE: i64 = 60; // 20 seconds
+static SESSION_COOKIE_MAX_AGE: i64 = 600; // 10 minutes
+static CSRF_COOKIE_MAX_AGE: i64 = 60; // 60 seconds
 
 #[derive(Clone, Copy)]
 struct Ports {
@@ -111,7 +111,6 @@ async fn main() {
 
     // Wait for both servers to complete (which they never will in this case)
     tokio::try_join!(http_server, https_server).unwrap();
-    // tokio::try_join!(http_server).unwrap();
 }
 
 fn spawn_http_server(port: u16, app: Router) -> JoinHandle<()> {
@@ -319,15 +318,10 @@ async fn google_auth(
     session.insert("csrf_data", csrf_data)?;
     session.set_expiry(expires_at);
 
-    // let cloned_session = session.clone();
-
     let csrf_id = store
         .store_session(session)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Failed to store csrf session"))?;
-
-    // println!("session: {:#?}", cloned_session);
-    // println!("csrf_id: {:#?}", csrf_id);
 
     let nonce_data = NonceData {
         nonce: nonce.clone(),
@@ -358,7 +352,6 @@ async fn google_auth(
         OAUTH2_AUTH_URL, OAUTH2_QUERY_STRING, params.client_id, params.redirect_uri, state, nonce
     );
 
-    // Need to investigate how to use nonce, state, csrf_token.
     println!("Auth URL: {:#?}", auth_url);
 
     let mut headers = HeaderMap::new();
@@ -371,7 +364,6 @@ async fn google_auth(
     )?;
 
     Ok((headers, Redirect::to(&auth_url)))
-    // Ok(Redirect::to(auth_url.as_str()))
 }
 
 // Valid user session required. If there is none, redirect to the auth page
@@ -386,13 +378,13 @@ async fn logout(
     let mut headers = HeaderMap::new();
     header_set_cookie(
         &mut headers,
-        COOKIE_NAME.to_string(),
+        SESSION_COOKIE_NAME.to_string(),
         "value".to_string(),
         Utc::now() - Duration::seconds(86400),
         -86400,
     )?;
 
-    delete_session_from_store(cookies, COOKIE_NAME.to_string(), &store).await?;
+    delete_session_from_store(cookies, SESSION_COOKIE_NAME.to_string(), &store).await?;
 
     Ok((headers, Redirect::to("/")))
 }
@@ -489,12 +481,12 @@ async fn authorized(
 
     // TODO: Check user_data against idinfo
 
-    let max_age = COOKIE_MAX_AGE;
+    let max_age = SESSION_COOKIE_MAX_AGE;
     let expires_at = Utc::now() + Duration::seconds(max_age);
     let session_id = create_and_store_session(user_data, &state.store, expires_at).await?;
     header_set_cookie(
         &mut headers,
-        COOKIE_NAME.to_string(),
+        SESSION_COOKIE_NAME.to_string(),
         session_id,
         expires_at,
         max_age,
@@ -512,7 +504,6 @@ async fn verify_nonce(
     let decoded_state = urlencoding::decode(&auth_response.state).expect("Failed to decode state");
     let state_in_response: StateParams = serde_json::from_str(&decoded_state)?;
 
-    // state_in_response.nonce_id;
     let session = store
         .load_session(state_in_response.nonce_id)
         .await?
@@ -547,10 +538,7 @@ async fn validate_origin(headers: &HeaderMap, auth_url: &str) -> Result<(), AppE
         .map_or("".to_string(), |p| format!(":{}", p));
     let expected_origin = format!("{}://{}{}", scheme, host, port);
 
-    let origin = headers
-        .get("Origin")
-        .or_else(|| headers.get("Referer"))
-        .and_then(|h| h.to_str().ok());
+    let origin = headers.get("Origin").and_then(|h| h.to_str().ok());
 
     match origin {
         Some(origin) if origin.starts_with(&expected_origin) => Ok(()),
@@ -592,20 +580,9 @@ async fn csrf_checks(
     }
 
     if user_agent != csrf_data.user_agent {
-        return Err(anyhow::anyhow!("Funny thing happend").into());
+        return Err(anyhow::anyhow!("User agent mismatch").into());
     }
 
-    // println!("CSRF ID: {:#?}", csrf_id);
-    // println!("Session: {:#?}", session);
-
-    // println!("CSRF token: {:#?}", csrf_data.csrf_token);
-    // println!("State: {:#?}", query.state);
-
-    // println!("Now: {:#?}", Utc::now());
-    // println!("CSRF token expires at: {:#?}", csrf_data.expires_at);
-
-    // println!("User agent: {:#?}", user_agent);
-    // println!("CSRF user agent: {:#?}", csrf_data.user_agent);
     Ok(())
 }
 
@@ -694,6 +671,7 @@ struct AuthRedirect;
 
 impl IntoResponse for AuthRedirect {
     fn into_response(self) -> Response {
+        println!("AuthRedirect called.");
         Redirect::temporary("/").into_response()
     }
 }
@@ -722,7 +700,7 @@ where
                 _ => panic!("unexpected error getting cookies: {e}"),
             })?;
         // println!("Cookies: {:#?}", cookies);
-        let session_cookie = cookies.get(COOKIE_NAME).ok_or(AuthRedirect)?;
+        let session_cookie = cookies.get(SESSION_COOKIE_NAME).ok_or(AuthRedirect)?;
 
         // Retrieve session from store
         let session = store
@@ -731,7 +709,7 @@ where
             .unwrap()
             .ok_or(AuthRedirect)?;
 
-        // println!("Loaded Session: {:#?}", session);
+        println!("Loaded Session: {:#?}", session);
         // Retrieve user data from session
         let user = session.get::<User>("user").ok_or(AuthRedirect)?;
 

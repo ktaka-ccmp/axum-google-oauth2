@@ -335,7 +335,7 @@ pub(crate) async fn verify_idtoken(
     }
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let skew = 2; // allow 2 seconds of skew
+    let skew: u64 = 2; // allow 2 seconds of skew
 
     if let Some(nbf) = idinfo.nbf {
         if now + skew < nbf.try_into().unwrap() {
