@@ -8,8 +8,8 @@ use axum::{
     routing::get,
     RequestPartsExt, Router,
 };
-use axum_extra::{headers, typed_header::TypedHeaderRejectionReason, TypedHeader};
-use http::{header, request::Parts, StatusCode};
+use axum_extra::{headers, TypedHeader};
+use http::{request::Parts, StatusCode};
 
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -17,6 +17,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 // use http::HeaderValue;
 // use tower_http::cors::CorsLayer;
 
+use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 use url::Url;
 
 use chrono::{DateTime, Duration, Utc};
@@ -345,7 +346,7 @@ async fn google_auth(
     };
 
     let state_json = serde_json::json!(state_params).to_string();
-    let state = urlencoding::encode(&state_json);
+    let state = URL_SAFE.encode(state_json);
 
     let auth_url = format!(
         "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}",
@@ -501,8 +502,9 @@ async fn verify_nonce(
     idinfo: IdInfo,
     store: &MemoryStore,
 ) -> Result<(), AppError> {
-    let decoded_state = urlencoding::decode(&auth_response.state).expect("Failed to decode state");
-    let state_in_response: StateParams = serde_json::from_str(&decoded_state)?;
+    let decoded_state_string =
+        String::from_utf8(URL_SAFE.decode(&auth_response.state).unwrap()).unwrap();
+    let state_in_response: StateParams = serde_json::from_str(&decoded_state_string)?;
 
     let session = store
         .load_session(state_in_response.nonce_id)
@@ -687,32 +689,21 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let store = MemoryStore::from_ref(state);
-
-        println!("Retrieving cookies");
         let cookies = parts
             .extract::<TypedHeader<headers::Cookie>>()
             .await
-            .map_err(|e| match *e.name() {
-                header::COOKIE => match e.reason() {
-                    TypedHeaderRejectionReason::Missing => AuthRedirect,
-                    _ => panic!("unexpected error getting Cookie header(s): {e}"),
-                },
-                _ => panic!("unexpected error getting cookies: {e}"),
-            })?;
-        // println!("Cookies: {:#?}", cookies);
-        let session_cookie = cookies.get(SESSION_COOKIE_NAME).ok_or(AuthRedirect)?;
+            .map_err(|_| AuthRedirect)?;
 
-        // Retrieve session from store
+        // Get session from cookie
+        let session_cookie = cookies.get(SESSION_COOKIE_NAME).ok_or(AuthRedirect)?;
         let session = store
             .load_session(session_cookie.to_string())
             .await
-            .unwrap()
-            .ok_or(AuthRedirect)?;
+            .map_err(|_| AuthRedirect)?;
 
-        println!("Loaded Session: {:#?}", session);
-        // Retrieve user data from session
+        // Get user data from session
+        let session = session.ok_or(AuthRedirect)?;
         let user = session.get::<User>("user").ok_or(AuthRedirect)?;
-
         Ok(user)
     }
 }
