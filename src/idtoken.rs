@@ -10,10 +10,10 @@ use std::{
 };
 use thiserror::Error;
 
+use dashmap::DashMap;
 use moka::future::Cache;
 use once_cell::sync::Lazy;
 use tokio::sync::RwLock;
-use dashmap::DashMap;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Jwks {

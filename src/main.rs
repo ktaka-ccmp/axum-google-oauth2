@@ -272,10 +272,15 @@ struct CsrfData {
     user_agent: String,
 }
 
-#[derive(Serialize, Deserialize)]
-struct StateData {
-    csrf_token: String, // Keep original csrf_token
-    nonce: String,      // Add nonce
+#[derive(Serialize, Deserialize, Debug)]
+struct StateParams {
+    csrf_token: String,
+    nonce_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct NonceData {
+    nonce: String,
     expires_at: DateTime<Utc>,
 }
 
@@ -314,24 +319,39 @@ async fn google_auth(
     session.insert("csrf_data", csrf_data)?;
     session.set_expiry(expires_at);
 
-    let cloned_session = session.clone();
+    // let cloned_session = session.clone();
 
     let csrf_id = store
         .store_session(session)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Failed to store session"))?;
+        .ok_or_else(|| anyhow::anyhow!("Failed to store csrf session"))?;
 
-    println!("session: {:#?}", cloned_session);
-    println!("csrf_id: {:#?}", csrf_id);
+    // println!("session: {:#?}", cloned_session);
+    // println!("csrf_id: {:#?}", csrf_id);
 
-    let state_data = StateData {
-        csrf_token,
+    let nonce_data = NonceData {
         nonce: nonce.clone(),
         expires_at,
     };
 
-    let state = serde_json::json!(state_data).to_string();
-    println!("State: {:#?}", state);
+    let mut session = Session::new();
+    session.insert("nonce_data", nonce_data)?;
+    session.set_expiry(expires_at);
+
+    let nonce_id = store
+        .store_session(session)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Failed to store nonce session"))?;
+
+    println!("csrf_id: {:#?}", csrf_id);
+
+    let state_params = StateParams {
+        csrf_token,
+        nonce_id,
+    };
+
+    let state_json = serde_json::json!(state_params).to_string();
+    let state = urlencoding::encode(&state_json);
 
     let auth_url = format!(
         "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}",
@@ -383,20 +403,16 @@ async fn delete_session_from_store(
     store: &MemoryStore,
 ) -> Result<(), AppError> {
     if let Some(cookie) = cookies.get(&cookie_name) {
-        match store
+        if let Some(session) = store
             .load_session(cookie.to_string())
             .await
             .context("failed to load session")?
         {
-            Some(session) => {
-                store
-                    .destroy_session(session)
-                    .await
-                    .context("failed to destroy session")?;
-            }
-            // No session active
-            None => (),
-        };
+            store
+                .destroy_session(session)
+                .await
+                .context("failed to destroy session")?;
+        }
     };
     Ok(())
 }
@@ -469,7 +485,7 @@ async fn authorized(
     let user_data = fetch_user_data_from_google(access_token).await?;
     let idinfo = verify_idtoken(id_token, state.oauth2_params.client_id.clone()).await?;
 
-    verify_nonce(auth_response, idinfo)?;
+    verify_nonce(auth_response, idinfo, &state.store).await?;
 
     // TODO: Check user_data against idinfo
 
@@ -488,19 +504,42 @@ async fn authorized(
     Ok((headers, Redirect::to("/popup_close")))
 }
 
-fn verify_nonce(auth_response: &AuthResponse, idinfo: IdInfo) -> Result<(), AppError> {
-    let state_in_response: StateData = serde_json::from_str(&auth_response.state)?;
-    if Utc::now().timestamp() > state_in_response.expires_at.timestamp() {
-        return Err(anyhow::anyhow!("State token expired").into());
+async fn verify_nonce(
+    auth_response: &AuthResponse,
+    idinfo: IdInfo,
+    store: &MemoryStore,
+) -> Result<(), AppError> {
+    let decoded_state = urlencoding::decode(&auth_response.state).expect("Failed to decode state");
+    let state_in_response: StateParams = serde_json::from_str(&decoded_state)?;
+
+    // state_in_response.nonce_id;
+    let session = store
+        .load_session(state_in_response.nonce_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Nonce Session not found"))?;
+    let nonce_data: NonceData = session
+        .get("nonce_data")
+        .ok_or_else(|| anyhow::anyhow!("No nonce data in session"))?;
+
+    println!("Nonce Data: {:#?}", nonce_data);
+
+    if Utc::now().timestamp() > nonce_data.expires_at.timestamp() {
+        return Err(anyhow::anyhow!("Nonce expired").into());
     }
-    if idinfo.nonce != Some(state_in_response.nonce) {
+    if idinfo.nonce != Some(nonce_data.nonce) {
         return Err(anyhow::anyhow!("Nonce mismatch").into());
     }
+
+    store
+        .destroy_session(session)
+        .await
+        .context("failed to destroy nonce session")?;
+
     Ok(())
 }
 
 async fn validate_origin(headers: &HeaderMap, auth_url: &str) -> Result<(), AppError> {
-    let parsed_url = Url::parse(&auth_url).expect("Invalid URL");
+    let parsed_url = Url::parse(auth_url).expect("Invalid URL");
     let scheme = parsed_url.scheme();
     let host = parsed_url.host_str().unwrap_or_default();
     let port = parsed_url
@@ -542,7 +581,7 @@ async fn csrf_checks(
         .unwrap_or("Unknown")
         .to_string();
 
-    let state_in_response: StateData = serde_json::from_str(&query.state)?;
+    let state_in_response: StateParams = serde_json::from_str(&query.state)?;
 
     if state_in_response.csrf_token != csrf_data.csrf_token {
         return Err(anyhow::anyhow!("CSRF token mismatch").into());
@@ -710,7 +749,6 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         tracing::error!("Application error: {:#}", self.0);
 
-        // (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong").into_response()
         let message = self.0.to_string();
         (StatusCode::INTERNAL_SERVER_ERROR, message).into_response()
     }
