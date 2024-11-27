@@ -289,64 +289,12 @@ async fn google_auth(
     State(store): State<MemoryStore>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
-    let csrf_token = thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect::<String>();
-
-    let nonce = thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect::<String>();
-
     let expires_at = Utc::now() + Duration::seconds(CSRF_COOKIE_MAX_AGE);
 
-    let user_agent = headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("Unknown")
-        .to_string();
+    let (csrf_token, csrf_id) = generate_store_csrf(headers, expires_at, &store).await?;
+    let (nonce, nonce_id) = generate_store_nonce(expires_at, store).await?;
 
-    let csrf_data = CsrfData {
-        csrf_token: csrf_token.clone(),
-        expires_at,
-        user_agent,
-    };
-
-    let mut session = Session::new();
-    session.insert("csrf_data", csrf_data)?;
-    session.set_expiry(expires_at);
-
-    let csrf_id = store
-        .store_session(session)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Failed to store csrf session"))?;
-
-    let nonce_data = NonceData {
-        nonce: nonce.clone(),
-        expires_at,
-    };
-
-    let mut session = Session::new();
-    session.insert("nonce_data", nonce_data)?;
-    session.set_expiry(expires_at);
-
-    let nonce_id = store
-        .store_session(session)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Failed to store nonce session"))?;
-
-    println!("csrf_id: {:#?}", csrf_id);
-
-    let state_params = StateParams {
-        csrf_token,
-        nonce_id,
-    };
-
-    let state_json = serde_json::json!(state_params).to_string();
-    let state = URL_SAFE.encode(state_json);
+    let state = encode_state(csrf_token, nonce_id);
 
     let auth_url = format!(
         "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}",
@@ -365,6 +313,63 @@ async fn google_auth(
     )?;
 
     Ok((headers, Redirect::to(&auth_url)))
+}
+
+fn encode_state(csrf_token: String, nonce_id: String) -> String {
+    let state_params = StateParams {
+        csrf_token,
+        nonce_id,
+    };
+
+    let state_json = serde_json::json!(state_params).to_string();
+    let state = URL_SAFE.encode(state_json);
+    state
+}
+
+async fn generate_store_nonce(expires_at: DateTime<Utc>, store: MemoryStore) -> Result<(String, String), AppError> {
+    let nonce = thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect::<String>();
+    let nonce_data = NonceData {
+        nonce: nonce.clone(),
+        expires_at,
+    };
+    let mut session = Session::new();
+    session.insert("nonce_data", nonce_data)?;
+    session.set_expiry(expires_at);
+    let nonce_id = store
+        .store_session(session)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Failed to store nonce session"))?;
+    Ok((nonce, nonce_id))
+}
+
+async fn generate_store_csrf(headers: HeaderMap, expires_at: DateTime<Utc>, store: &MemoryStore) -> Result<(String, String), AppError> {
+    let csrf_token = thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect::<String>();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("Unknown")
+        .to_string();
+    let csrf_data = CsrfData {
+        csrf_token: csrf_token.clone(),
+        expires_at,
+        user_agent,
+    };
+    let mut session = Session::new();
+    session.insert("csrf_data", csrf_data)?;
+    session.set_expiry(expires_at);
+    let csrf_id = store
+        .store_session(session)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Failed to store csrf session"))?;
+    Ok((csrf_token, csrf_id))
 }
 
 // Valid user session required. If there is none, redirect to the auth page
