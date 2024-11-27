@@ -62,27 +62,27 @@ cargo watch -x run
 
 ```mermaid
 sequenceDiagram
-    participant User
+    participant Browser
     participant Server
     participant Session Store
     participant Google
 
-    Note over User,Server: 1️⃣ Initial Flow
-    User->>Server: 1.1. GET /auth/google
+    Note over Browser,Server: 1️⃣ Initial Flow
+    Browser->>Server: 1.1. GET /auth/google
     Server->>Server: 1.2. Generate csrf_token & nonce
     Server->>Session Store: 1.3. Store (csrf_id, {csrf_token, expires_at, user_agent})
     Server->>Session Store: 1.4. Store (nonce_id, {nonce, expires_at})
-    Server-->>User: 1.5. Set __Host-CsrfId cookie (SameSite=Lax)
-    User->>Google: 1.6. Redirect with state={csrf_token,nonce_id} & nonce
+    Server-->>Browser: 1.5. Set __Host-CsrfId cookie (SameSite=Lax)
+    Browser->>Google: 1.6. Redirect with state={csrf_token,nonce_id} & nonce
     
-    Note over User,Google: 2️⃣ Google Auth
-    User->>Google: 2.1. Login & Consent
-    Google->>User: 2.2. Returns HTML form with auto-submit
+    Note over Browser,Google: 2️⃣ Google Auth
+    Browser->>Google: 2.1. Login & Consent
+    Google->>Browser: 2.2. Returns HTML form with auto-submit
     Note left of Google: Form contains:<br/>2.3. code, state, id_token(nonce)
 
-    Note over User,Server: 3️⃣ Callback Processing
-    User->>Server: 3.1. POST /auth/authorized with:<br/>code, state=(csrf_token, nonce_id), id_token(nonce)
-    Note right of User: 3.2. __Host-CsrfId cookie NOT SENT<br/>(Cross-origin POST from accounts.google.com)
+    Note over Browser,Server: 3️⃣ Callback Processing
+    Browser->>Server: 3.1. POST /auth/authorized with:<br/>code, state=(csrf_token, nonce_id), id_token(nonce)
+    Note right of Browser: 3.2. __Host-CsrfId cookie NOT SENT<br/>(Cross-origin POST from accounts.google.com)
     
     Server->>Server: 3.3. Validate Origin/Referer
     Session Store->>Server: 3.4. Load {nonce, expires_at} using nonce_id
@@ -93,7 +93,7 @@ sequenceDiagram
     Server<<->>Google: 4.1. Exchange code for tokens
     Server->>Session Store: 4.2. Delete nonce session
     Server->>Session Store: 4.3. Store (session_id, user_data)
-    Server-->>User: 4.4. Set __Host-SessionId cookie<br/>Redirect to success page
+    Server-->>Browser: 4.4. Set __Host-SessionId cookie<br/>Redirect to success page
 ```
 
 #### Implementation Detail
@@ -195,26 +195,26 @@ Concerns:
 
 ```mermaid
 sequenceDiagram
-    participant User
+    participant Browser
     participant Server
     participant Session Store
     participant Google
 
-    Note over User,Server: 1️⃣ Initial Flow
-    User->>Server: 1.1. GET /auth/google
+    Note over Browser,Server: 1️⃣ Initial Flow
+    Browser->>Server: 1.1. GET /auth/google
     Server->>Server: 1.2. Generate csrf_token & nonce
     Server->>Session Store: 1.3. Store (csrf_id, {csrf_token, expires_at, user_agent})
     Server->>Session Store: 1.4. Store (nonce_id, {nonce, expires_at})
-    Server-->>User: 1.5. Set-cookie __Host-CsrfId=csrf_id (SameSite=Lax)
-    User->>Google: 1.6. Redirect with state={csrf_token,nonce_id} & nonce
+    Server-->>Browser: 1.5. Set-cookie __Host-CsrfId=csrf_id (SameSite=Lax)
+    Browser->>Google: 1.6. Redirect with state={csrf_token,nonce_id} & nonce
     
-    Note over User,Google: 2️⃣ Google Auth
-    User->>Google: 2.1. Login & Consent
-    Google-->>User: 2.2. 302 Redirect to callback with:<br/>code, state=(csrf_token, nonce_id), id_token(nonce)
-    Note right of User: 2.3. Top-level redirect:<br/>SameSite=Lax cookie IS sent
+    Note over Browser,Google: 2️⃣ Google Auth
+    Browser->>Google: 2.1. Login & Consent
+    Google-->>Browser: 2.2. 302 Redirect to callback with:<br/>code, state=(csrf_token, nonce_id), id_token(nonce)
+    Note right of Browser: 2.3. Top-level redirect:<br/>SameSite=Lax cookie IS sent
     
-    Note over User,Server: 3️⃣ Callback Processing
-    User->>Server: 3.1. GET /auth/authorized with:<br/>code, state=(csrf_token, nonce_id),<br/>id_token(nonce), __Host-CsrfId cookie
+    Note over Browser,Server: 3️⃣ Callback Processing
+    Browser->>Server: 3.1. GET /auth/authorized with:<br/>code, state=(csrf_token, nonce_id),<br/>id_token(nonce), __Host-CsrfId cookie
     Server->>Server: 3.2. Validate Origin/Referer
     Session Store->>Server: 3.3. Load {csrf_token, expires_at, user_agent} using csrf_id
     Server->>Server: 3.4. Validate CSRF:
@@ -227,7 +227,7 @@ sequenceDiagram
     Server<<->>Google: 4.1. Exchange code for tokens
     Server->>Session Store: 4.2. Delete csrf & nonce sessions
     Server->>Session Store: 4.3. Store (session_id, user_data)
-    Server-->>User: 4.4. Set __Host-SessionId cookie<br/>Redirect to success page
+    Server-->>Browser: 4.4. Set __Host-SessionId cookie<br/>Redirect to success page
 ```
 
 #### Implementation Detail
