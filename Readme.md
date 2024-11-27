@@ -67,29 +67,33 @@ sequenceDiagram
     participant Session Store
     participant Google
 
-    User->>Server: GET /auth/google
-    Server->>Server: Generate csrf_token & nonce
-    Server->>Session Store: Store (csrf_id, {csrf_token, expires_at, user_agent})
-    Server->>Session Store: Store (nonce_id, {nonce, expires_at})
-    Server-->>User: Set __Host-CsrfId cookie (SameSite=Lax)
-    User->>Google: Redirect with state={csrf_token,nonce_id} & nonce
+    Note over User,Server: 1️⃣ Initial Flow
+    User->>Server: 1.1. GET /auth/google
+    Server->>Server: 1.2. Generate csrf_token & nonce
+    Server->>Session Store: 1.3. Store (csrf_id, {csrf_token, expires_at, user_agent})
+    Server->>Session Store: 1.4. Store (nonce_id, {nonce, expires_at})
+    Server-->>User: 1.5. Set __Host-CsrfId cookie (SameSite=Lax)
+    User->>Google: 1.6. Redirect with state={csrf_token,nonce_id} & nonce
     
-    User->>Google: Login & Consent
-    Google->>User: Returns HTML form with auto-submit
-    Note left of Google: Form contains:<br/>1. code, 2. state<br/>3. id_token (nonce)
+    Note over User,Google: 2️⃣ Google Auth
+    User->>Google: 2.1. Login & Consent
+    Google->>User: 2.2. Returns HTML form with auto-submit
+    Note left of Google: Form contains:<br/>2.3. code, state, id_token(nonce)
 
-    User->>Server: POST /auth/authorized with: <br/>1. code, 2. state=(csrf_token, nonce_id),<br/>3. id_token (nonce)
-    Note right of User: __Host-CsrfId cookie(SameSite=Lax) NOT SENT<br/>(Cross-origin POST from accounts.google.com)
+    Note over User,Server: 3️⃣ Callback Processing
+    User->>Server: 3.1. POST /auth/authorized with:<br/>code, state=(csrf_token, nonce_id), id_token(nonce)
+    Note right of User: 3.2. __Host-CsrfId cookie NOT SENT<br/>(Cross-origin POST from accounts.google.com)
     
-    Server->>Server: Validate Origin/Referer
-    Session Store->>Server: Load {nonce, expires_at} using nonce_id
-    Server->>Server: Validate:
-    Note right of Server: 1. ID token signature<br/>2. nonce matches<br/>3. Origin is Google
+    Server->>Server: 3.3. Validate Origin/Referer
+    Session Store->>Server: 3.4. Load {nonce, expires_at} using nonce_id
+    Server->>Server: 3.5. Validate:
+    Note right of Server: - ID token signature<br/>- nonce matches<br/>- Origin is Google
     
-    Server<<->>Google: Exchange code for tokens
-    Server->>Session Store: Delete nonce session
-    Server->>Session Store: Store (session_id, user_data)
-    Server-->>User: Set __Host-SessionId cookie<br/>Redirect to success page
+    Note over Server,Google: 4️⃣ Session Creation
+    Server<<->>Google: 4.1. Exchange code for tokens
+    Server->>Session Store: 4.2. Delete nonce session
+    Server->>Session Store: 4.3. Store (session_id, user_data)
+    Server-->>User: 4.4. Set __Host-SessionId cookie<br/>Redirect to success page
 ```
 
 #### Implementation Detail
@@ -196,29 +200,34 @@ sequenceDiagram
     participant Session Store
     participant Google
 
-    User->>Server: GET /auth/google
-    Server->>Server: Generate csrf_token & nonce
-    Server->>Session Store: Store (csrf_id, {csrf_token, expires_at, user_agent})
-    Server->>Session Store: Store (nonce_id, {nonce, expires_at})
-    Server-->>User: Set-cookie __Host-CsrfId=csrf_id  (SameSite=Lax)
-    User->>Google: Redirect with state={csrf_token,nonce_id} & nonce
+    Note over User,Server: 1️⃣ Initial Flow
+    User->>Server: 1.1. GET /auth/google
+    Server->>Server: 1.2. Generate csrf_token & nonce
+    Server->>Session Store: 1.3. Store (csrf_id, {csrf_token, expires_at, user_agent})
+    Server->>Session Store: 1.4. Store (nonce_id, {nonce, expires_at})
+    Server-->>User: 1.5. Set-cookie __Host-CsrfId=csrf_id (SameSite=Lax)
+    User->>Google: 1.6. Redirect with state={csrf_token,nonce_id} & nonce
     
-    User->>Google: Login & Consent
-    Google-->>User: 302 Redirect to callback with:<br/>1. code, 2. state=(csrf_token, nonce_id), 3. id_token (nonce)
-    Note right of User: Top-level redirect:<br/>SameSite=Lax cookie IS sent
+    Note over User,Google: 2️⃣ Google Auth
+    User->>Google: 2.1. Login & Consent
+    Google-->>User: 2.2. 302 Redirect to callback with:<br/>code, state=(csrf_token, nonce_id), id_token(nonce)
+    Note right of User: 2.3. Top-level redirect:<br/>SameSite=Lax cookie IS sent
     
-    User->>Server: GET /auth/authorized with: <br/>1. code, 2. state=(csrf_token, nonce_id),<br/>3. id_token (nonce), 4. __Host-CsrfId cookie
-    Server->>Server: Validate Origin/Referer
-    Session Store->>Server: Load {csrf_token, expires_at, user_agent} using csrf_id
-    Server->>Server: Validate:
-    Note right of Server: 1. CSRF token matches<br/>2. Session not expired<br/>3. User agent matches
-    Session Store->>Server: Load {nonce, expires_at} using nonce_id
-    Server->>Server: Validate:
-    Note right of Server: 1. ID token signature<br/>2. nonce matches
-    Server<<->>Google: Exchange code for tokens
-    Server->>Session Store: Delete csrf & nonce sessions
-    Server->>Session Store: Store (session_id, user_data)
-    Server-->>User: Set __Host-SessionId cookie<br/>Redirect to success page
+    Note over User,Server: 3️⃣ Callback Processing
+    User->>Server: 3.1. GET /auth/authorized with:<br/>code, state=(csrf_token, nonce_id),<br/>id_token(nonce), __Host-CsrfId cookie
+    Server->>Server: 3.2. Validate Origin/Referer
+    Session Store->>Server: 3.3. Load {csrf_token, expires_at, user_agent} using csrf_id
+    Server->>Server: 3.4. Validate CSRF:
+    Note right of Server: - CSRF token matches<br/>- Session not expired<br/>- User agent matches
+    Session Store->>Server: 3.5. Load {nonce, expires_at} using nonce_id
+    Server->>Server: 3.6. Validate Token:
+    Note right of Server: - ID token signature<br/>- nonce matches
+
+    Note over Server,Google: 4️⃣ Session Creation    
+    Server<<->>Google: 4.1. Exchange code for tokens
+    Server->>Session Store: 4.2. Delete csrf & nonce sessions
+    Server->>Session Store: 4.3. Store (session_id, user_data)
+    Server-->>User: 4.4. Set __Host-SessionId cookie<br/>Redirect to success page
 ```
 
 #### Implementation Detail
