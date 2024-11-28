@@ -265,13 +265,6 @@ async fn popup_close() -> impl IntoResponse {
         .unwrap()
 }
 
-#[derive(Serialize, Deserialize)]
-struct CsrfData {
-    csrf_token: String,
-    expires_at: DateTime<Utc>,
-    user_agent: String,
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 struct StateParams {
     csrf_token: String,
@@ -279,9 +272,10 @@ struct StateParams {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct NonceData {
-    nonce: String,
+struct TokenData {
+    token: String,
     expires_at: DateTime<Utc>,
+    user_agent: Option<String>,
 }
 
 async fn google_auth(
@@ -290,15 +284,27 @@ async fn google_auth(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
     let expires_at = Utc::now() + Duration::seconds(CSRF_COOKIE_MAX_AGE);
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("Unknown")
+        .to_string();
 
-    let (csrf_token, csrf_id) = generate_store_csrf(headers, expires_at, &store).await?;
-    let (nonce, nonce_id) = generate_store_nonce(expires_at, store).await?;
+    let (csrf_token, csrf_id) =
+        generate_store_token("csrf_data", expires_at, Some(user_agent), &store).await?;
+    let (nonce_token, nonce_id) =
+        generate_store_token("nonce_data", expires_at, None, &store).await?;
 
-    let state = encode_state(csrf_token, nonce_id);
+    let encoded_state = encode_state(csrf_token, nonce_id);
 
     let auth_url = format!(
         "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}",
-        OAUTH2_AUTH_URL, OAUTH2_QUERY_STRING, params.client_id, params.redirect_uri, state, nonce
+        OAUTH2_AUTH_URL,
+        OAUTH2_QUERY_STRING,
+        params.client_id,
+        params.redirect_uri,
+        encoded_state,
+        nonce_token
     );
 
     println!("Auth URL: {:#?}", auth_url);
@@ -322,54 +328,37 @@ fn encode_state(csrf_token: String, nonce_id: String) -> String {
     };
 
     let state_json = serde_json::json!(state_params).to_string();
-    let state = URL_SAFE.encode(state_json);
-    state
+    URL_SAFE.encode(state_json)
 }
 
-async fn generate_store_nonce(expires_at: DateTime<Utc>, store: MemoryStore) -> Result<(String, String), AppError> {
-    let nonce = thread_rng()
+async fn generate_store_token(
+    session_key: &str,
+    expires_at: DateTime<Utc>,
+    user_agent: Option<String>,
+    store: &MemoryStore,
+) -> Result<(String, String), AppError> {
+    let token: String = thread_rng()
         .sample_iter(&rand::distributions::Alphanumeric)
         .take(32)
         .map(char::from)
-        .collect::<String>();
-    let nonce_data = NonceData {
-        nonce: nonce.clone(),
-        expires_at,
-    };
-    let mut session = Session::new();
-    session.insert("nonce_data", nonce_data)?;
-    session.set_expiry(expires_at);
-    let nonce_id = store
-        .store_session(session)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Failed to store nonce session"))?;
-    Ok((nonce, nonce_id))
-}
+        .collect();
 
-async fn generate_store_csrf(headers: HeaderMap, expires_at: DateTime<Utc>, store: &MemoryStore) -> Result<(String, String), AppError> {
-    let csrf_token = thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect::<String>();
-    let user_agent = headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("Unknown")
-        .to_string();
-    let csrf_data = CsrfData {
-        csrf_token: csrf_token.clone(),
+    let token_data = TokenData {
+        token: token.clone(),
         expires_at,
         user_agent,
     };
+
     let mut session = Session::new();
-    session.insert("csrf_data", csrf_data)?;
+    session.insert(session_key, token_data)?;
     session.set_expiry(expires_at);
-    let csrf_id = store
+
+    let session_id = store
         .store_session(session)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Failed to store csrf session"))?;
-    Ok((csrf_token, csrf_id))
+        .ok_or_else(|| anyhow::anyhow!("Failed to store session"))?;
+
+    Ok((token, session_id))
 }
 
 // Valid user session required. If there is none, redirect to the auth page
@@ -433,7 +422,6 @@ struct OidcTokenResponse {
 }
 
 async fn post_authorized(
-    State(params): State<OAuth2Params>,
     State(state): State<AppState>,
     TypedHeader(cookies): TypedHeader<headers::Cookie>,
     headers: HeaderMap,
@@ -441,7 +429,7 @@ async fn post_authorized(
 ) -> Result<impl IntoResponse, AppError> {
     println!("Cookies: {:#?}", cookies.get(CSRF_COOKIE_NAME));
 
-    validate_origin(&headers, &params.auth_url).await?;
+    validate_origin(&headers, &state.oauth2_params.auth_url).await?;
     if form.state.is_empty() {
         return Err(anyhow::anyhow!("Missing state parameter").into());
     }
@@ -515,16 +503,20 @@ async fn verify_nonce(
         .load_session(state_in_response.nonce_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Nonce Session not found"))?;
-    let nonce_data: NonceData = session
+    let nonce_data: TokenData = session
         .get("nonce_data")
         .ok_or_else(|| anyhow::anyhow!("No nonce data in session"))?;
 
     println!("Nonce Data: {:#?}", nonce_data);
 
-    if Utc::now().timestamp() > nonce_data.expires_at.timestamp() {
+    if Utc::now() > nonce_data.expires_at {
+        println!("Nonce Expired: {:#?}", nonce_data.expires_at);
+        println!("Now: {:#?}", Utc::now());
         return Err(anyhow::anyhow!("Nonce expired").into());
     }
-    if idinfo.nonce != Some(nonce_data.nonce) {
+    if idinfo.nonce != Some(nonce_data.token.clone()) {
+        println!("Nonce in ID Token: {:#?}", idinfo.nonce);
+        println!("Stored Nonce: {:#?}", nonce_data.token);
         return Err(anyhow::anyhow!("Nonce mismatch").into());
     }
 
@@ -545,11 +537,18 @@ async fn validate_origin(headers: &HeaderMap, auth_url: &str) -> Result<(), AppE
         .map_or("".to_string(), |p| format!(":{}", p));
     let expected_origin = format!("{}://{}{}", scheme, host, port);
 
-    let origin = headers.get("Origin").and_then(|h| h.to_str().ok());
+    let origin = headers
+        .get("Origin")
+        .or_else(|| headers.get("Referer"))
+        .and_then(|h| h.to_str().ok());
 
     match origin {
         Some(origin) if origin.starts_with(&expected_origin) => Ok(()),
-        _ => Err(anyhow::anyhow!("Invalid origin").into()),
+        _ => {
+            println!("Expected Origin: {:#?}", expected_origin);
+            println!("Actual Origin: {:#?}", origin);
+            Err(anyhow::anyhow!("Invalid origin").into())
+        }
     }
 }
 
@@ -561,12 +560,12 @@ async fn csrf_checks(
 ) -> Result<(), AppError> {
     let csrf_id = cookies
         .get(CSRF_COOKIE_NAME)
-        .ok_or_else(|| anyhow::anyhow!("No session cookie found"))?;
+        .ok_or_else(|| anyhow::anyhow!("No CSRF session cookie found"))?;
     let session = store
         .load_session(csrf_id.to_string())
         .await?
-        .ok_or_else(|| anyhow::anyhow!("CSRF Session not found"))?;
-    let csrf_data: CsrfData = session
+        .ok_or_else(|| anyhow::anyhow!("CSRF Session not found in Session Store"))?;
+    let csrf_data: TokenData = session
         .get("csrf_data")
         .ok_or_else(|| anyhow::anyhow!("No CSRF data in session"))?;
 
@@ -576,17 +575,37 @@ async fn csrf_checks(
         .unwrap_or("Unknown")
         .to_string();
 
-    let state_in_response: StateParams = serde_json::from_str(&query.state)?;
+    let decoded_state_string = String::from_utf8(
+        URL_SAFE
+            .decode(&query.state)
+            .map_err(|e| anyhow::anyhow!("Failed to decode state: {e}"))?,
+    )
+    .context("Failed to convert decoded state to string")?;
 
-    if state_in_response.csrf_token != csrf_data.csrf_token {
+    let state_in_response: StateParams = serde_json::from_str(&decoded_state_string)
+        .context("Failed to deserialize state from response")?;
+
+    if state_in_response.csrf_token != csrf_data.token {
+        println!(
+            "CSRF Token in state param: {:#?}",
+            state_in_response.csrf_token
+        );
+        println!("Stored CSRF Token: {:#?}", csrf_data.token);
         return Err(anyhow::anyhow!("CSRF token mismatch").into());
     }
 
     if Utc::now() > csrf_data.expires_at {
+        println!("Now: {}", Utc::now());
+        println!("CSRF Expires At: {:#?}", csrf_data.expires_at);
         return Err(anyhow::anyhow!("CSRF token expired").into());
     }
 
-    if user_agent != csrf_data.user_agent {
+    if user_agent != csrf_data.user_agent.clone().unwrap_or_default() {
+        println!("User Agent: {:#?}", user_agent);
+        println!(
+            "Stored User Agent: {:#?}",
+            csrf_data.user_agent.unwrap_or_default()
+        );
         return Err(anyhow::anyhow!("User agent mismatch").into());
     }
 
