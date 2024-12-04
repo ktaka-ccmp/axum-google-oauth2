@@ -8,8 +8,8 @@ use axum::{
     routing::get,
     RequestPartsExt, Router,
 };
-use axum_extra::{headers, typed_header::TypedHeaderRejectionReason, TypedHeader};
-use http::{header, request::Parts, StatusCode};
+use axum_extra::{headers, TypedHeader};
+use http::{request::Parts, StatusCode};
 
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -17,6 +17,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 // use http::HeaderValue;
 // use tower_http::cors::CorsLayer;
 
+use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 use url::Url;
 
 use chrono::{DateTime, Duration, Utc};
@@ -222,12 +223,12 @@ struct IndexTemplateAnon<'a> {
 async fn index(user: Option<User>) -> impl IntoResponse {
     match user {
         Some(u) => {
-            let message = format!("Hey {}! You're logged in!", u.name);
+            let message = format!("Hey {}!", u.name);
             let template = IndexTemplateUser { message: &message };
             (StatusCode::OK, Html(template.render().unwrap())).into_response()
         }
         None => {
-            let message = "You're not logged in.\nClick the Login button below.".to_string();
+            let message = "Click the Login button below.".to_string();
             let template = IndexTemplateAnon { message: &message };
             (StatusCode::OK, Html(template.render().unwrap())).into_response()
         }
@@ -264,13 +265,6 @@ async fn popup_close() -> impl IntoResponse {
         .unwrap()
 }
 
-#[derive(Serialize, Deserialize)]
-struct CsrfData {
-    csrf_token: String,
-    expires_at: DateTime<Utc>,
-    user_agent: String,
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 struct StateParams {
     csrf_token: String,
@@ -278,9 +272,10 @@ struct StateParams {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct NonceData {
-    nonce: String,
+struct TokenData {
+    token: String,
     expires_at: DateTime<Utc>,
+    user_agent: Option<String>,
 }
 
 async fn google_auth(
@@ -288,68 +283,28 @@ async fn google_auth(
     State(store): State<MemoryStore>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
-    let csrf_token = thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect::<String>();
-
-    let nonce = thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect::<String>();
-
     let expires_at = Utc::now() + Duration::seconds(CSRF_COOKIE_MAX_AGE);
-
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("Unknown")
         .to_string();
 
-    let csrf_data = CsrfData {
-        csrf_token: csrf_token.clone(),
-        expires_at,
-        user_agent,
-    };
+    let (csrf_token, csrf_id) =
+        generate_store_token("csrf_session", expires_at, Some(user_agent), &store).await?;
+    let (nonce_token, nonce_id) =
+        generate_store_token("nonce_session", expires_at, None, &store).await?;
 
-    let mut session = Session::new();
-    session.insert("csrf_data", csrf_data)?;
-    session.set_expiry(expires_at);
-
-    let csrf_id = store
-        .store_session(session)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Failed to store csrf session"))?;
-
-    let nonce_data = NonceData {
-        nonce: nonce.clone(),
-        expires_at,
-    };
-
-    let mut session = Session::new();
-    session.insert("nonce_data", nonce_data)?;
-    session.set_expiry(expires_at);
-
-    let nonce_id = store
-        .store_session(session)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Failed to store nonce session"))?;
-
-    println!("csrf_id: {:#?}", csrf_id);
-
-    let state_params = StateParams {
-        csrf_token,
-        nonce_id,
-    };
-
-    let state_json = serde_json::json!(state_params).to_string();
-    let state = urlencoding::encode(&state_json);
+    let encoded_state = encode_state(csrf_token, nonce_id);
 
     let auth_url = format!(
         "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}",
-        OAUTH2_AUTH_URL, OAUTH2_QUERY_STRING, params.client_id, params.redirect_uri, state, nonce
+        OAUTH2_AUTH_URL,
+        OAUTH2_QUERY_STRING,
+        params.client_id,
+        params.redirect_uri,
+        encoded_state,
+        nonce_token
     );
 
     println!("Auth URL: {:#?}", auth_url);
@@ -364,6 +319,46 @@ async fn google_auth(
     )?;
 
     Ok((headers, Redirect::to(&auth_url)))
+}
+
+fn encode_state(csrf_token: String, nonce_id: String) -> String {
+    let state_params = StateParams {
+        csrf_token,
+        nonce_id,
+    };
+
+    let state_json = serde_json::json!(state_params).to_string();
+    URL_SAFE.encode(state_json)
+}
+
+async fn generate_store_token(
+    session_key: &str,
+    expires_at: DateTime<Utc>,
+    user_agent: Option<String>,
+    store: &MemoryStore,
+) -> Result<(String, String), AppError> {
+    let token: String = thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect();
+
+    let token_data = TokenData {
+        token: token.clone(),
+        expires_at,
+        user_agent,
+    };
+
+    let mut session = Session::new();
+    session.insert(session_key, token_data)?;
+    session.set_expiry(expires_at);
+
+    let session_id = store
+        .store_session(session)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Failed to store session"))?;
+
+    Ok((token, session_id))
 }
 
 // Valid user session required. If there is none, redirect to the auth page
@@ -427,7 +422,6 @@ struct OidcTokenResponse {
 }
 
 async fn post_authorized(
-    State(params): State<OAuth2Params>,
     State(state): State<AppState>,
     TypedHeader(cookies): TypedHeader<headers::Cookie>,
     headers: HeaderMap,
@@ -435,7 +429,7 @@ async fn post_authorized(
 ) -> Result<impl IntoResponse, AppError> {
     println!("Cookies: {:#?}", cookies.get(CSRF_COOKIE_NAME));
 
-    validate_origin(&headers, &params.auth_url).await?;
+    validate_origin(&headers, &state.oauth2_params.auth_url).await?;
     if form.state.is_empty() {
         return Err(anyhow::anyhow!("Missing state parameter").into());
     }
@@ -501,23 +495,28 @@ async fn verify_nonce(
     idinfo: IdInfo,
     store: &MemoryStore,
 ) -> Result<(), AppError> {
-    let decoded_state = urlencoding::decode(&auth_response.state).expect("Failed to decode state");
-    let state_in_response: StateParams = serde_json::from_str(&decoded_state)?;
+    let decoded_state_string =
+        String::from_utf8(URL_SAFE.decode(&auth_response.state).unwrap()).unwrap();
+    let state_in_response: StateParams = serde_json::from_str(&decoded_state_string)?;
 
     let session = store
         .load_session(state_in_response.nonce_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Nonce Session not found"))?;
-    let nonce_data: NonceData = session
-        .get("nonce_data")
+    let nonce_session: TokenData = session
+        .get("nonce_session")
         .ok_or_else(|| anyhow::anyhow!("No nonce data in session"))?;
 
-    println!("Nonce Data: {:#?}", nonce_data);
+    println!("Nonce Data: {:#?}", nonce_session);
 
-    if Utc::now().timestamp() > nonce_data.expires_at.timestamp() {
+    if Utc::now() > nonce_session.expires_at {
+        println!("Nonce Expired: {:#?}", nonce_session.expires_at);
+        println!("Now: {:#?}", Utc::now());
         return Err(anyhow::anyhow!("Nonce expired").into());
     }
-    if idinfo.nonce != Some(nonce_data.nonce) {
+    if idinfo.nonce != Some(nonce_session.token.clone()) {
+        println!("Nonce in ID Token: {:#?}", idinfo.nonce);
+        println!("Stored Nonce: {:#?}", nonce_session.token);
         return Err(anyhow::anyhow!("Nonce mismatch").into());
     }
 
@@ -538,11 +537,18 @@ async fn validate_origin(headers: &HeaderMap, auth_url: &str) -> Result<(), AppE
         .map_or("".to_string(), |p| format!(":{}", p));
     let expected_origin = format!("{}://{}{}", scheme, host, port);
 
-    let origin = headers.get("Origin").and_then(|h| h.to_str().ok());
+    let origin = headers
+        .get("Origin")
+        .or_else(|| headers.get("Referer"))
+        .and_then(|h| h.to_str().ok());
 
     match origin {
         Some(origin) if origin.starts_with(&expected_origin) => Ok(()),
-        _ => Err(anyhow::anyhow!("Invalid origin").into()),
+        _ => {
+            println!("Expected Origin: {:#?}", expected_origin);
+            println!("Actual Origin: {:#?}", origin);
+            Err(anyhow::anyhow!("Invalid origin").into())
+        }
     }
 }
 
@@ -554,13 +560,13 @@ async fn csrf_checks(
 ) -> Result<(), AppError> {
     let csrf_id = cookies
         .get(CSRF_COOKIE_NAME)
-        .ok_or_else(|| anyhow::anyhow!("No session cookie found"))?;
+        .ok_or_else(|| anyhow::anyhow!("No CSRF session cookie found"))?;
     let session = store
         .load_session(csrf_id.to_string())
         .await?
-        .ok_or_else(|| anyhow::anyhow!("CSRF Session not found"))?;
-    let csrf_data: CsrfData = session
-        .get("csrf_data")
+        .ok_or_else(|| anyhow::anyhow!("CSRF Session not found in Session Store"))?;
+    let csrf_session: TokenData = session
+        .get("csrf_session")
         .ok_or_else(|| anyhow::anyhow!("No CSRF data in session"))?;
 
     let user_agent = headers
@@ -569,17 +575,37 @@ async fn csrf_checks(
         .unwrap_or("Unknown")
         .to_string();
 
-    let state_in_response: StateParams = serde_json::from_str(&query.state)?;
+    let decoded_state_string = String::from_utf8(
+        URL_SAFE
+            .decode(&query.state)
+            .map_err(|e| anyhow::anyhow!("Failed to decode state: {e}"))?,
+    )
+    .context("Failed to convert decoded state to string")?;
 
-    if state_in_response.csrf_token != csrf_data.csrf_token {
+    let state_in_response: StateParams = serde_json::from_str(&decoded_state_string)
+        .context("Failed to deserialize state from response")?;
+
+    if state_in_response.csrf_token != csrf_session.token {
+        println!(
+            "CSRF Token in state param: {:#?}",
+            state_in_response.csrf_token
+        );
+        println!("Stored CSRF Token: {:#?}", csrf_session.token);
         return Err(anyhow::anyhow!("CSRF token mismatch").into());
     }
 
-    if Utc::now() > csrf_data.expires_at {
+    if Utc::now() > csrf_session.expires_at {
+        println!("Now: {}", Utc::now());
+        println!("CSRF Expires At: {:#?}", csrf_session.expires_at);
         return Err(anyhow::anyhow!("CSRF token expired").into());
     }
 
-    if user_agent != csrf_data.user_agent {
+    if user_agent != csrf_session.user_agent.clone().unwrap_or_default() {
+        println!("User Agent: {:#?}", user_agent);
+        println!(
+            "Stored User Agent: {:#?}",
+            csrf_session.user_agent.unwrap_or_default()
+        );
         return Err(anyhow::anyhow!("User agent mismatch").into());
     }
 
@@ -687,32 +713,21 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let store = MemoryStore::from_ref(state);
-
-        println!("Retrieving cookies");
         let cookies = parts
             .extract::<TypedHeader<headers::Cookie>>()
             .await
-            .map_err(|e| match *e.name() {
-                header::COOKIE => match e.reason() {
-                    TypedHeaderRejectionReason::Missing => AuthRedirect,
-                    _ => panic!("unexpected error getting Cookie header(s): {e}"),
-                },
-                _ => panic!("unexpected error getting cookies: {e}"),
-            })?;
-        // println!("Cookies: {:#?}", cookies);
-        let session_cookie = cookies.get(SESSION_COOKIE_NAME).ok_or(AuthRedirect)?;
+            .map_err(|_| AuthRedirect)?;
 
-        // Retrieve session from store
+        // Get session from cookie
+        let session_cookie = cookies.get(SESSION_COOKIE_NAME).ok_or(AuthRedirect)?;
         let session = store
             .load_session(session_cookie.to_string())
             .await
-            .unwrap()
-            .ok_or(AuthRedirect)?;
+            .map_err(|_| AuthRedirect)?;
 
-        println!("Loaded Session: {:#?}", session);
-        // Retrieve user data from session
+        // Get user data from session
+        let session = session.ok_or(AuthRedirect)?;
         let user = session.get::<User>("user").ok_or(AuthRedirect)?;
-
         Ok(user)
     }
 }
