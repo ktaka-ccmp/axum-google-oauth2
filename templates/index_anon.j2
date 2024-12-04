@@ -9,8 +9,7 @@
 
 <body>
     <div>
-        <h1>Welcome to the Index Page</h1>
-        <p>{{message}}</p>
+        <h1>{{message}}</h1>
     </div>
 
     <div>
@@ -24,15 +23,15 @@
                 popupWindow = window.open(
                     `/auth/google`,
                     "PopupWindow",
-                    "width=700,height=800,left=1000,top=-1000,resizable=yes,scrollbars=yes"
+                    "width=500,height=600,left=1000,top=100,resizable=yes,scrollbars=yes"
                 );
 
                 // Set up an interval to check if the popup has returned to our origin
                 const checkInterval = setInterval(() => {
                     if (popupWindow.closed) {
                         clearInterval(checkInterval);
-                        window.location.reload();
-                        // handlePopupClosed();
+                        // window.location.reload();
+                        handlePopupClosed();
                     }
                 }, 100);  // Check every 100ms
             }
