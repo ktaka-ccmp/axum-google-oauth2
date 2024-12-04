@@ -468,12 +468,13 @@ async fn authorized(
     println!("Access Token: {:#?}", access_token);
     println!("ID Token: {:#?}", id_token);
 
-    let user_data = fetch_user_data_from_google(access_token).await?;
-    let idinfo = verify_idtoken(id_token, state.oauth2_params.client_id.clone()).await?;
+    let user_data = user_from_verified_idtoken(id_token, &state, auth_response).await?;
 
-    verify_nonce(auth_response, idinfo, &state.store).await?;
-
-    // TODO: Check user_data against idinfo
+    // Optional check for user data from userinfo endpoint
+    let user_data_userinfo = fetch_user_data_from_google(access_token).await?;
+    if user_data.id != user_data_userinfo.id {
+        return Err(anyhow::anyhow!("ID mismatch").into());
+    }
 
     let max_age = SESSION_COOKIE_MAX_AGE;
     let expires_at = Utc::now() + Duration::seconds(max_age);
@@ -488,6 +489,26 @@ async fn authorized(
     println!("Headers: {:#?}", headers);
 
     Ok((headers, Redirect::to("/popup_close")))
+}
+
+async fn user_from_verified_idtoken(
+    id_token: String,
+    state: &AppState,
+    auth_response: &AuthResponse,
+) -> Result<User, AppError> {
+    let idinfo = verify_idtoken(id_token, state.oauth2_params.client_id.clone()).await?;
+    verify_nonce(auth_response, idinfo.clone(), &state.store).await?;
+    let user_data_idtoken = User {
+        family_name: idinfo.family_name,
+        name: idinfo.name,
+        picture: idinfo.picture.unwrap_or_default(),
+        email: idinfo.email,
+        given_name: idinfo.given_name,
+        id: idinfo.sub,
+        hd: idinfo.hd,
+        verified_email: idinfo.email_verified,
+    };
+    Ok(user_data_idtoken)
 }
 
 async fn verify_nonce(

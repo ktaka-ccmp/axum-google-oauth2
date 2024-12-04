@@ -34,7 +34,7 @@ struct Jwk {
 }
 
 #[allow(unused)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub(crate) struct IdInfo {
     pub iss: String,
     pub sub: String,
