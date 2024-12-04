@@ -223,12 +223,12 @@ struct IndexTemplateAnon<'a> {
 async fn index(user: Option<User>) -> impl IntoResponse {
     match user {
         Some(u) => {
-            let message = format!("Hey {}! You're logged in!", u.name);
+            let message = format!("Hey {}!", u.name);
             let template = IndexTemplateUser { message: &message };
             (StatusCode::OK, Html(template.render().unwrap())).into_response()
         }
         None => {
-            let message = "You're not logged in.\nClick the Login button below.".to_string();
+            let message = "Click the Login button below.".to_string();
             let template = IndexTemplateAnon { message: &message };
             (StatusCode::OK, Html(template.render().unwrap())).into_response()
         }
@@ -291,9 +291,9 @@ async fn google_auth(
         .to_string();
 
     let (csrf_token, csrf_id) =
-        generate_store_token("csrf_data", expires_at, Some(user_agent), &store).await?;
+        generate_store_token("csrf_session", expires_at, Some(user_agent), &store).await?;
     let (nonce_token, nonce_id) =
-        generate_store_token("nonce_data", expires_at, None, &store).await?;
+        generate_store_token("nonce_session", expires_at, None, &store).await?;
 
     let encoded_state = encode_state(csrf_token, nonce_id);
 
@@ -503,20 +503,20 @@ async fn verify_nonce(
         .load_session(state_in_response.nonce_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Nonce Session not found"))?;
-    let nonce_data: TokenData = session
-        .get("nonce_data")
+    let nonce_session: TokenData = session
+        .get("nonce_session")
         .ok_or_else(|| anyhow::anyhow!("No nonce data in session"))?;
 
-    println!("Nonce Data: {:#?}", nonce_data);
+    println!("Nonce Data: {:#?}", nonce_session);
 
-    if Utc::now() > nonce_data.expires_at {
-        println!("Nonce Expired: {:#?}", nonce_data.expires_at);
+    if Utc::now() > nonce_session.expires_at {
+        println!("Nonce Expired: {:#?}", nonce_session.expires_at);
         println!("Now: {:#?}", Utc::now());
         return Err(anyhow::anyhow!("Nonce expired").into());
     }
-    if idinfo.nonce != Some(nonce_data.token.clone()) {
+    if idinfo.nonce != Some(nonce_session.token.clone()) {
         println!("Nonce in ID Token: {:#?}", idinfo.nonce);
-        println!("Stored Nonce: {:#?}", nonce_data.token);
+        println!("Stored Nonce: {:#?}", nonce_session.token);
         return Err(anyhow::anyhow!("Nonce mismatch").into());
     }
 
@@ -565,8 +565,8 @@ async fn csrf_checks(
         .load_session(csrf_id.to_string())
         .await?
         .ok_or_else(|| anyhow::anyhow!("CSRF Session not found in Session Store"))?;
-    let csrf_data: TokenData = session
-        .get("csrf_data")
+    let csrf_session: TokenData = session
+        .get("csrf_session")
         .ok_or_else(|| anyhow::anyhow!("No CSRF data in session"))?;
 
     let user_agent = headers
@@ -585,26 +585,26 @@ async fn csrf_checks(
     let state_in_response: StateParams = serde_json::from_str(&decoded_state_string)
         .context("Failed to deserialize state from response")?;
 
-    if state_in_response.csrf_token != csrf_data.token {
+    if state_in_response.csrf_token != csrf_session.token {
         println!(
             "CSRF Token in state param: {:#?}",
             state_in_response.csrf_token
         );
-        println!("Stored CSRF Token: {:#?}", csrf_data.token);
+        println!("Stored CSRF Token: {:#?}", csrf_session.token);
         return Err(anyhow::anyhow!("CSRF token mismatch").into());
     }
 
-    if Utc::now() > csrf_data.expires_at {
+    if Utc::now() > csrf_session.expires_at {
         println!("Now: {}", Utc::now());
-        println!("CSRF Expires At: {:#?}", csrf_data.expires_at);
+        println!("CSRF Expires At: {:#?}", csrf_session.expires_at);
         return Err(anyhow::anyhow!("CSRF token expired").into());
     }
 
-    if user_agent != csrf_data.user_agent.clone().unwrap_or_default() {
+    if user_agent != csrf_session.user_agent.clone().unwrap_or_default() {
         println!("User Agent: {:#?}", user_agent);
         println!(
             "Stored User Agent: {:#?}",
-            csrf_data.user_agent.unwrap_or_default()
+            csrf_session.user_agent.unwrap_or_default()
         );
         return Err(anyhow::anyhow!("User agent mismatch").into());
     }
