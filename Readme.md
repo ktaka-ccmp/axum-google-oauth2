@@ -12,6 +12,8 @@ I wrote [a blog post](https://ktaka.blog.ccmp.jp/2024/12/axum-google-oauth2oidc-
 
 <video width="600" height="600" src="https://github.com/ktaka-ccmp/ktaka.blog.ccmp.jp/master/2024/Axum-Google-OAuth2-Login/image/blog-20241206-02.mp4" controls="true" autoplay loop></video>
 
+https://github.com/ktaka-ccmp/ktaka.blog.ccmp.jp/master/2024/Axum-Google-OAuth2-Login/image/blog-20241206-02.mp4
+
 ## How to use App
 
 - Obtain Client ID and Client Secret from Google <https://console.cloud.google.com/apis/credentials>
