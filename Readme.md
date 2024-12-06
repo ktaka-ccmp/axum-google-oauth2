@@ -14,6 +14,12 @@ I wrote [a blog post](https://ktaka.blog.ccmp.jp/2024/12/axum-google-oauth2oidc-
 
 https://github.com/ktaka-ccmp/ktaka.blog.ccmp.jp/raw/refs/heads/master/2024/Axum-Google-OAuth2-Login/image/blog-20241206-02.mp4
 
+
+
+https://github.com/user-attachments/assets/64d5265d-13fe-4aba-a82c-91234ab2f9b8
+
+
+
 ## How to use App
 
 - Obtain Client ID and Client Secret from Google <https://console.cloud.google.com/apis/credentials>
