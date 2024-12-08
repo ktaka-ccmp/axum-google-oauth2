@@ -479,29 +479,15 @@ async fn authorized(
         -86400,
     )?;
 
-    let decoded_state_string =
-        String::from_utf8(URL_SAFE.decode(&auth_response.state).unwrap()).unwrap();
-    let state_in_response: StateParams = serde_json::from_str(&decoded_state_string)?;
-
-    let session = state
-        .store
-        .load_session(state_in_response.pkce_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("PKCE Session not found"))?;
-    let pkce_session: TokenData = session
-        .get("pkce_session")
-        .ok_or_else(|| anyhow::anyhow!("No pkce data in session"))?;
-    let pkce_verifier = pkce_session.token.clone();
-
-    println!("PKCE Verifier: {:#?}", pkce_verifier);
+    let pkce_verifier = get_pkce_verifier(auth_response, &state).await?;
 
     let (access_token, id_token) = exchange_code_for_token(
         state.oauth2_params.clone(),
         auth_response.code.clone(),
-        // None,
-        Some(pkce_verifier),
+        pkce_verifier,
     )
     .await?;
+
     // println!("Access Token: {:#?}", access_token);
     // println!("ID Token: {:#?}", id_token);
 
@@ -526,6 +512,26 @@ async fn authorized(
     println!("Headers: {:#?}", headers);
 
     Ok((headers, Redirect::to("/popup_close")))
+}
+
+async fn get_pkce_verifier(
+    auth_response: &AuthResponse,
+    state: &AppState,
+) -> Result<String, AppError> {
+    let decoded_state_string =
+        String::from_utf8(URL_SAFE.decode(&auth_response.state).unwrap()).unwrap();
+    let state_in_response: StateParams = serde_json::from_str(&decoded_state_string)?;
+    let session = state
+        .store
+        .load_session(state_in_response.pkce_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("PKCE Session not found"))?;
+    let pkce_session: TokenData = session
+        .get("pkce_session")
+        .ok_or_else(|| anyhow::anyhow!("No pkce data in session"))?;
+    let pkce_verifier = pkce_session.token.clone();
+    println!("PKCE Verifier: {:#?}", pkce_verifier);
+    Ok(pkce_verifier)
 }
 
 async fn user_from_verified_idtoken(
@@ -726,35 +732,21 @@ async fn fetch_user_data_from_google(access_token: String) -> Result<User, AppEr
 async fn exchange_code_for_token(
     params: OAuth2Params,
     code: String,
-    code_verifier: Option<String>,
+    code_verifier: String,
 ) -> Result<(String, String), AppError> {
-    let response = match code_verifier {
-        Some(code_verifier) => reqwest::Client::new()
-            .post(params.token_url)
-            .form(&[
-                ("code", code),
-                ("client_id", params.client_id.clone()),
-                ("client_secret", params.client_secret.clone()),
-                ("redirect_uri", params.redirect_uri.clone()),
-                ("grant_type", "authorization_code".to_string()),
-                ("code_verifier", code_verifier),
-            ])
-            .send()
-            .await
-            .context("failed in sending request request to authorization server")?,
-        None => reqwest::Client::new()
-            .post(params.token_url)
-            .form(&[
-                ("code", code),
-                ("client_id", params.client_id.clone()),
-                ("client_secret", params.client_secret.clone()),
-                ("redirect_uri", params.redirect_uri.clone()),
-                ("grant_type", "authorization_code".to_string()),
-            ])
-            .send()
-            .await
-            .context("failed in sending request request to authorization server")?,
-    };
+    let response = reqwest::Client::new()
+        .post(params.token_url)
+        .form(&[
+            ("code", code),
+            ("client_id", params.client_id.clone()),
+            ("client_secret", params.client_secret.clone()),
+            ("redirect_uri", params.redirect_uri.clone()),
+            ("grant_type", "authorization_code".to_string()),
+            ("code_verifier", code_verifier),
+        ])
+        .send()
+        .await
+        .context("failed in sending request request to authorization server")?;
 
     match response.status() {
         reqwest::StatusCode::OK => {
