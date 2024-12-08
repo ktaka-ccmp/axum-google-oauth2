@@ -274,7 +274,7 @@ async fn popup_close() -> impl IntoResponse {
 struct StateParams {
     csrf_token: String,
     nonce_id: String,
-    pkce_id: Option<String>,
+    pkce_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -282,7 +282,6 @@ struct TokenData {
     token: String,
     expires_at: DateTime<Utc>,
     user_agent: Option<String>,
-    option: Option<String>,
 }
 
 async fn google_auth(
@@ -298,31 +297,20 @@ async fn google_auth(
         .to_string();
 
     let (csrf_token, csrf_id) =
-        generate_store_token("csrf_session", expires_at, Some(user_agent), None, &store).await?;
+        generate_store_token("csrf_session", expires_at, Some(user_agent), &store).await?;
     let (nonce_token, nonce_id) =
-        generate_store_token("nonce_session", expires_at, None, None, &store).await?;
-    let (pkce_token, pkce_id) = generate_store_token(
-        "pkce_session",
-        expires_at,
-        None,
-        Some("S256".to_string()),
-        &store,
-    )
-    .await?;
+        generate_store_token("nonce_session", expires_at, None, &store).await?;
+    let (pkce_token, pkce_id) =
+        generate_store_token("pkce_session", expires_at, None, &store).await?;
 
     println!("PKCE ID: {:?}, PKCE verifier: {:?}", pkce_id, pkce_token);
 
-    let pkce_token_sha256 = Sha256::digest(pkce_token.as_bytes());
-    // let pkce_challenge = base64_url::encode(&pkce_token_sha256);
-    let pkce_challenge = URL_SAFE_NO_PAD.encode(pkce_token_sha256);
-
-    println!("PKCE Token sha256: {:x}", pkce_token_sha256);
+    let pkce_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(pkce_token.as_bytes()));
     println!("PKCE Challenge: {:#?}", pkce_challenge);
 
-    let encoded_state = encode_state(csrf_token, nonce_id, Some(pkce_id));
+    let encoded_state = encode_state(csrf_token, nonce_id, pkce_id);
 
     let auth_url = format!(
-        // "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}",
         "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}&code_challenge={}&code_challenge_method={}",
         OAUTH2_AUTH_URL,
         OAUTH2_QUERY_STRING,
@@ -348,7 +336,7 @@ async fn google_auth(
     Ok((headers, Redirect::to(&auth_url)))
 }
 
-fn encode_state(csrf_token: String, nonce_id: String, pkce_id: Option<String>) -> String {
+fn encode_state(csrf_token: String, nonce_id: String, pkce_id: String) -> String {
     let state_params = StateParams {
         csrf_token,
         nonce_id,
@@ -363,7 +351,6 @@ async fn generate_store_token(
     session_key: &str,
     expires_at: DateTime<Utc>,
     user_agent: Option<String>,
-    option: Option<String>,
     store: &MemoryStore,
 ) -> Result<(String, String), AppError> {
     let token: String = thread_rng()
@@ -376,7 +363,6 @@ async fn generate_store_token(
         token: token.clone(),
         expires_at,
         user_agent,
-        option,
     };
 
     let mut session = Session::new();
@@ -499,11 +485,7 @@ async fn authorized(
 
     let session = state
         .store
-        .load_session(
-            state_in_response
-                .pkce_id
-                .ok_or_else(|| anyhow::anyhow!("PKCE ID not found"))?,
-        )
+        .load_session(state_in_response.pkce_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("PKCE Session not found"))?;
     let pkce_session: TokenData = session
