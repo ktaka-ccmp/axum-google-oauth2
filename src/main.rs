@@ -17,7 +17,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 // use http::HeaderValue;
 // use tower_http::cors::CorsLayer;
 
-use base64::{engine::general_purpose::URL_SAFE, Engine as _};
+use base64::{
+    engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use url::Url;
 
 use chrono::{DateTime, Duration, Utc};
@@ -33,6 +36,8 @@ use dotenv::dotenv;
 
 mod idtoken;
 use idtoken::{verify_idtoken, IdInfo};
+
+use sha2::{Digest, Sha256};
 
 static OAUTH2_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 static OAUTH2_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -269,6 +274,7 @@ async fn popup_close() -> impl IntoResponse {
 struct StateParams {
     csrf_token: String,
     nonce_id: String,
+    pkce_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -276,6 +282,7 @@ struct TokenData {
     token: String,
     expires_at: DateTime<Utc>,
     user_agent: Option<String>,
+    option: Option<String>,
 }
 
 async fn google_auth(
@@ -291,20 +298,40 @@ async fn google_auth(
         .to_string();
 
     let (csrf_token, csrf_id) =
-        generate_store_token("csrf_session", expires_at, Some(user_agent), &store).await?;
+        generate_store_token("csrf_session", expires_at, Some(user_agent), None, &store).await?;
     let (nonce_token, nonce_id) =
-        generate_store_token("nonce_session", expires_at, None, &store).await?;
+        generate_store_token("nonce_session", expires_at, None, None, &store).await?;
+    let (pkce_token, pkce_id) = generate_store_token(
+        "pkce_session",
+        expires_at,
+        None,
+        Some("S256".to_string()),
+        &store,
+    )
+    .await?;
 
-    let encoded_state = encode_state(csrf_token, nonce_id);
+    println!("PKCE ID: {:?}, PKCE verifier: {:?}", pkce_id, pkce_token);
+
+    let pkce_token_sha256 = Sha256::digest(pkce_token.as_bytes());
+    // let pkce_challenge = base64_url::encode(&pkce_token_sha256);
+    let pkce_challenge = URL_SAFE_NO_PAD.encode(pkce_token_sha256);
+
+    println!("PKCE Token sha256: {:x}", pkce_token_sha256);
+    println!("PKCE Challenge: {:#?}", pkce_challenge);
+
+    let encoded_state = encode_state(csrf_token, nonce_id, Some(pkce_id));
 
     let auth_url = format!(
-        "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}",
+        // "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}",
+        "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}&code_challenge={}&code_challenge_method={}",
         OAUTH2_AUTH_URL,
         OAUTH2_QUERY_STRING,
         params.client_id,
         params.redirect_uri,
         encoded_state,
-        nonce_token
+        nonce_token,
+        pkce_challenge,
+        "S256"
     );
 
     println!("Auth URL: {:#?}", auth_url);
@@ -321,10 +348,11 @@ async fn google_auth(
     Ok((headers, Redirect::to(&auth_url)))
 }
 
-fn encode_state(csrf_token: String, nonce_id: String) -> String {
+fn encode_state(csrf_token: String, nonce_id: String, pkce_id: Option<String>) -> String {
     let state_params = StateParams {
         csrf_token,
         nonce_id,
+        pkce_id,
     };
 
     let state_json = serde_json::json!(state_params).to_string();
@@ -335,6 +363,7 @@ async fn generate_store_token(
     session_key: &str,
     expires_at: DateTime<Utc>,
     user_agent: Option<String>,
+    option: Option<String>,
     store: &MemoryStore,
 ) -> Result<(String, String), AppError> {
     let token: String = thread_rng()
@@ -347,6 +376,7 @@ async fn generate_store_token(
         token: token.clone(),
         expires_at,
         user_agent,
+        option,
     };
 
     let mut session = Session::new();
@@ -463,10 +493,35 @@ async fn authorized(
         -86400,
     )?;
 
-    let (access_token, id_token) =
-        exchange_code_for_token(state.oauth2_params.clone(), auth_response.code.clone()).await?;
-    println!("Access Token: {:#?}", access_token);
-    println!("ID Token: {:#?}", id_token);
+    let decoded_state_string =
+        String::from_utf8(URL_SAFE.decode(&auth_response.state).unwrap()).unwrap();
+    let state_in_response: StateParams = serde_json::from_str(&decoded_state_string)?;
+
+    let session = state
+        .store
+        .load_session(
+            state_in_response
+                .pkce_id
+                .ok_or_else(|| anyhow::anyhow!("PKCE ID not found"))?,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("PKCE Session not found"))?;
+    let pkce_session: TokenData = session
+        .get("pkce_session")
+        .ok_or_else(|| anyhow::anyhow!("No pkce data in session"))?;
+    let pkce_verifier = pkce_session.token.clone();
+
+    println!("PKCE Verifier: {:#?}", pkce_verifier);
+
+    let (access_token, id_token) = exchange_code_for_token(
+        state.oauth2_params.clone(),
+        auth_response.code.clone(),
+        // None,
+        Some(pkce_verifier),
+    )
+    .await?;
+    // println!("Access Token: {:#?}", access_token);
+    // println!("ID Token: {:#?}", id_token);
 
     let user_data = user_from_verified_idtoken(id_token, &state, auth_response).await?;
 
@@ -689,19 +744,46 @@ async fn fetch_user_data_from_google(access_token: String) -> Result<User, AppEr
 async fn exchange_code_for_token(
     params: OAuth2Params,
     code: String,
+    code_verifier: Option<String>,
 ) -> Result<(String, String), AppError> {
-    let response = reqwest::Client::new()
-        .post(params.token_url)
-        .form(&[
-            ("code", code),
-            ("client_id", params.client_id.clone()),
-            ("client_secret", params.client_secret.clone()),
-            ("redirect_uri", params.redirect_uri.clone()),
-            ("grant_type", "authorization_code".to_string()),
-        ])
-        .send()
-        .await
-        .context("failed in sending request request to authorization server")?;
+    let response = match code_verifier {
+        Some(code_verifier) => reqwest::Client::new()
+            .post(params.token_url)
+            .form(&[
+                ("code", code),
+                ("client_id", params.client_id.clone()),
+                ("client_secret", params.client_secret.clone()),
+                ("redirect_uri", params.redirect_uri.clone()),
+                ("grant_type", "authorization_code".to_string()),
+                ("code_verifier", code_verifier),
+            ])
+            .send()
+            .await
+            .context("failed in sending request request to authorization server")?,
+        None => reqwest::Client::new()
+            .post(params.token_url)
+            .form(&[
+                ("code", code),
+                ("client_id", params.client_id.clone()),
+                ("client_secret", params.client_secret.clone()),
+                ("redirect_uri", params.redirect_uri.clone()),
+                ("grant_type", "authorization_code".to_string()),
+            ])
+            .send()
+            .await
+            .context("failed in sending request request to authorization server")?,
+    };
+
+    match response.status() {
+        reqwest::StatusCode::OK => {
+            println!("Debug Token Exchange Response: {:#?}", response);
+        }
+        status => {
+            println!("Token Exchange Response: {:#?}", response);
+            return Err(anyhow::anyhow!("Unexpected status code: {:#?}", status).into());
+        }
+    };
+
     let response_body = response
         .text()
         .await
