@@ -250,6 +250,11 @@ async fn popup_close() -> impl IntoResponse {
     <title>Self-closing Page</title>
     <script>
         window.onload = function() {
+            // Send message to parent window
+            if (window.opener) {
+                window.opener.postMessage('auth_complete', window.location.origin);
+            }
+            // Close the window after a short delay
             setTimeout(function() {
                 window.close();
             }, 500); // 500 milliseconds = 0.5 seconds
@@ -311,7 +316,8 @@ async fn google_auth(
     let encoded_state = encode_state(csrf_token, nonce_id, pkce_id);
 
     let auth_url = format!(
-        "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}&code_challenge={}&code_challenge_method={}",
+        "{}?{}&client_id={}&redirect_uri={}&state={}&nonce={}\
+        &code_challenge={}&code_challenge_method={}",
         OAUTH2_AUTH_URL,
         OAUTH2_QUERY_STRING,
         params.client_id,
