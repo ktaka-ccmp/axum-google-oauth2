@@ -30,18 +30,6 @@
                         handlePopupClosed();
                     }
                 });
-
-                // Fallback check for popup closure
-                const checkInterval = setInterval(() => {
-                    try {
-                        if (popupWindow.closed) {
-                            clearInterval(checkInterval);
-                            handlePopupClosed();
-                        }
-                    } catch (e) {
-                        // Handle COOP error silently
-                    }
-                }, 100);  // Check every 100ms
             }
 
             function handlePopupClosed() {
