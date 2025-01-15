@@ -1,17 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Index Page</title>
 </head>
-
 <body>
     <div>
         <h1>{{message}}</h1>
     </div>
-
     <div>
         <button onclick="openPopup()">Login</button>
 
@@ -26,14 +23,13 @@
                     "width=400,height=520,left=1000,top=200,resizable=yes,scrollbars=yes"
                 );
 
-                // Set up an interval to check if the popup has returned to our origin
-                const checkInterval = setInterval(() => {
-                    if (popupWindow.closed) {
-                        clearInterval(checkInterval);
-                        // window.location.reload();
+                // Listen for messages from the auth popup
+                window.addEventListener('message', function(event) {
+                    // Make sure to verify the origin matches your domain
+                    if (event.data === 'auth_complete') {
                         handlePopupClosed();
                     }
-                }, 100);  // Check every 100ms
+                });
             }
 
             function handlePopupClosed() {
@@ -48,18 +44,22 @@
                 // Reload the parent window
                 setTimeout(() => {
                     window.location.reload();
-                }, 100);  // Wait for 1 second before reloading
+                }, 100);  // Wait for 0.1 second before reloading
             }
 
-            // Add an unload event listener to handle page navigation
+            // Clean up on page unload
             window.addEventListener('unload', () => {
-                if (popupWindow && !popupWindow.closed) {
-                    popupWindow.close();
+                if (popupWindow) {
+                    try {
+                        if (!popupWindow.closed) {
+                            popupWindow.close();
+                        }
+                    } catch (e) {
+                        // Handle COOP error silently
+                    }
                 }
             });
         </script>
     </div>
-
 </body>
-
 </html>
