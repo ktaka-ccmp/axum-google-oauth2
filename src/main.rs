@@ -501,6 +501,10 @@ async fn authorized(
 
     // Optional check for user data from userinfo endpoint
     let user_data_userinfo = fetch_user_data_from_google(access_token).await?;
+
+    #[cfg(debug_assertions)]
+    println!("User Data from Userinfo: {:#?}", user_data_userinfo);
+
     if user_data.id != user_data_userinfo.id {
         return Err(anyhow::anyhow!("ID mismatch").into());
     }
