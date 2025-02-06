@@ -310,7 +310,6 @@ pub(crate) async fn verify_idtoken(
     #[cfg(debug_assertions)]
     println!("Decoded id_token payload: {:#?}", idinfo);
 
-
     let jwks_url = "https://www.googleapis.com/oauth2/v3/certs";
     let jwks = fetch_jwks(jwks_url).await?;
     let jwk = find_jwk(&jwks, &kid).ok_or(TokenVerificationError::NoMatchingKey)?;
