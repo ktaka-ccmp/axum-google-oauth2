@@ -23,7 +23,7 @@ use base64::{
 use url::Url;
 
 use chrono::{DateTime, Duration, Utc};
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
 
 use askama_axum::Template;
 
@@ -358,8 +358,8 @@ async fn generate_store_token(
     user_agent: Option<String>,
     store: &MemoryStore,
 ) -> Result<(String, String), AppError> {
-    let token: String = thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
+    let token: String = rng()
+        .sample_iter(&rand::distr::Alphanumeric)
         .take(32)
         .map(char::from)
         .collect();
