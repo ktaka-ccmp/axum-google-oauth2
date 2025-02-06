@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use async_session::{MemoryStore, Session, SessionStore};
 use axum::{
-    async_trait,
-    extract::{Form, FromRef, FromRequestParts, Query, State},
+    extract::{Form, FromRef, FromRequestParts, OptionalFromRequestParts, Query, State},
     http::{header::SET_COOKIE, HeaderMap},
     response::{Html, IntoResponse, Redirect, Response},
     routing::get,
@@ -29,7 +28,7 @@ use rand::{thread_rng, Rng};
 use askama_axum::Template;
 
 use axum_server::tls_rustls::RustlsConfig;
-use std::{env, net::SocketAddr, path::PathBuf};
+use std::{convert::Infallible, env, net::SocketAddr, path::PathBuf};
 use tokio::task::JoinHandle;
 
 use dotenv::dotenv;
@@ -789,7 +788,6 @@ impl IntoResponse for AuthRedirect {
     }
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for User
 where
     MemoryStore: FromRef<S>,
@@ -819,6 +817,23 @@ where
     }
 }
 
+impl<S> OptionalFromRequestParts<S> for User
+where
+    MemoryStore: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        match <User as FromRequestParts<S>>::from_request_parts(parts, state).await {
+            Ok(res) => Ok(Some(res)),
+            Err(AuthRedirect) => Ok(None),
+        }
+    }
+}
 // Use anyhow, define error and enable '?'
 // For a simplified example of using anyhow in axum check /examples/anyhow-error-response
 #[derive(Debug)]
